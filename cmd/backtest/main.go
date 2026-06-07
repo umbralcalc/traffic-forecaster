@@ -45,7 +45,9 @@ func run(in, col, lastRealised string, minHistory int) error {
 		forecast.RecentWindow{K: 12},
 		forecast.Seasonal{FallbackK: 12},
 		forecast.SeasonalRecent{K: 12},
-		forecast.PipelineResidual{FallbackK: 12},
+		forecast.PipelineResidual{FallbackK: 12, ResidualK: 0},  // all-history (biased by trend)
+		forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, // trailing window (trend-aware)
+		forecast.PipelineRatio{FallbackK: 12},
 	}
 	results := forecast.Backtest(series, models, minHistory)
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
@@ -59,6 +61,17 @@ func run(in, col, lastRealised string, minHistory int) error {
 			marker = "  <- best"
 		}
 		fmt.Printf("  %-18s %10.1f %9d %9.2f%s\n", r.Name, r.MeanCRPS, r.Scored, r.CalUnif, marker)
+	}
+	fmt.Println("\nPIT histograms (10 bins, each ~0.10 if calibrated; U-shape=overconfident, ∩=underconfident, slope=biased):")
+	for _, r := range results {
+		if r.Scored == 0 {
+			continue
+		}
+		fmt.Printf("  %-18s ", r.Name)
+		for _, b := range r.PITBins {
+			fmt.Printf("%4.0f", b*100)
+		}
+		fmt.Println()
 	}
 	fmt.Println("\n(lower CRPS better; cal.unif closer to 0 = better-calibrated PIT;")
 	fmt.Println(" climatology-mean is a point forecast — the floor distributions should beat.)")
@@ -106,15 +119,25 @@ func loadSeries(path, col, lastRealised string) (map[string][]forecast.Point, in
 		if err != nil {
 			continue
 		}
-		var cov float64
-		if ci, ok := idx["pipeline_weighted_days"]; ok && ci < len(rec) {
-			cov, _ = strconv.ParseFloat(rec[ci], 64) // forward pipeline covariate (0 if blank)
-		}
 		borough := rec[idx["borough"]]
-		series[borough] = append(series[borough], forecast.Point{Year: y, Month: m, Value: v, Covariate: cov})
+		series[borough] = append(series[borough], forecast.Point{
+			Year: y, Month: m, Value: v,
+			Pipeline:  optFloat(rec, idx, "pipeline_weighted_days"),
+			Planned:   optFloat(rec, idx, "planned_days"),
+			Emergency: optFloat(rec, idx, "emergency_days"),
+		})
 		monthSet[month] = true
 	}
 	return series, len(series), len(monthSet), nil
+}
+
+// optFloat reads a named column if present, returning 0 when absent or blank.
+func optFloat(rec []string, idx map[string]int, name string) float64 {
+	if ci, ok := idx[name]; ok && ci < len(rec) {
+		v, _ := strconv.ParseFloat(rec[ci], 64)
+		return v
+	}
+	return 0
 }
 
 func parseMonth(s string) (int, int, error) {

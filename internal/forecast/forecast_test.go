@@ -47,23 +47,48 @@ func TestRecentWindowAbstainsOnEmpty(t *testing.T) {
 func TestPipelineResidual(t *testing.T) {
 	// History: realised exceeds pipeline by +5 and +7 (emergency/overrun gap).
 	hist := []Point{
-		{Year: 2025, Month: 1, Value: 15, Covariate: 10},
-		{Year: 2025, Month: 2, Value: 17, Covariate: 10},
+		{Year: 2025, Month: 1, Value: 15, Pipeline: 10},
+		{Year: 2025, Month: 2, Value: 17, Pipeline: 10},
 	}
-	target := Point{Year: 2025, Month: 3, Covariate: 20}
+	target := Point{Year: 2025, Month: 3, Pipeline: 20}
 	got := PipelineResidual{FallbackK: 6}.Predict(hist, target)
-	// Ensemble = target.Covariate + {residuals} = 20 + {5,7} = {25, 27}.
+	// Ensemble = target.Pipeline + {residuals} = 20 + {5,7} = {25, 27}.
 	if len(got) != 2 || got[0] != 25 || got[1] != 27 {
 		t.Fatalf("pipeline+residual samples = %v, want [25 27]", got)
 	}
 }
 
-func TestPipelineResidualFallsBackWithoutCovariate(t *testing.T) {
+func TestPipelineRatio(t *testing.T) {
+	// Past realised/pipeline ratios = 1.5 and 2.0; target pipeline 10 -> {15,20}.
+	hist := []Point{
+		{Value: 15, Pipeline: 10},
+		{Value: 20, Pipeline: 10},
+	}
+	got := PipelineRatio{FallbackK: 6}.Predict(hist, Point{Pipeline: 10})
+	if len(got) != 2 || got[0] != 15 || got[1] != 20 {
+		t.Fatalf("pipeline×ratio samples = %v, want [15 20]", got)
+	}
+}
+
+func TestPipelineDecomp(t *testing.T) {
+	// planned-overrun factor 1.2, emergency 3, on target pipeline 10 -> 15.
+	hist := []Point{{Value: 9, Pipeline: 5, Planned: 6, Emergency: 3}}
+	got := PipelineDecomp{FallbackK: 6}.Predict(hist, Point{Pipeline: 10})
+	// 10*(6/5) + 3 = 12 + 3 = 15.
+	if len(got) != 1 || got[0] != 15 {
+		t.Fatalf("pipeline-decomp samples = %v, want [15]", got)
+	}
+}
+
+func TestPipelineModelsFallBackWithoutPipeline(t *testing.T) {
 	hist := mkSeries([]float64{1, 2, 3, 4}, 2025, 1)
-	target := Point{Year: 2025, Month: 5, Covariate: 0} // no pipeline known
-	got := PipelineResidual{FallbackK: 2}.Predict(hist, target)
-	if len(got) == 0 {
-		t.Fatal("expected fallback samples, got abstain")
+	target := Point{Year: 2025, Month: 5, Pipeline: 0} // no pipeline known
+	for _, m := range []Model{
+		PipelineResidual{FallbackK: 2}, PipelineRatio{FallbackK: 2}, PipelineDecomp{FallbackK: 2},
+	} {
+		if got := m.Predict(hist, target); len(got) == 0 {
+			t.Errorf("%s: expected fallback samples, got abstain", m.Name())
+		}
 	}
 }
 
