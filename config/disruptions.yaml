@@ -1,0 +1,126 @@
+# traffic-forecaster — resolution criterion (the frozen contract)
+#
+# This file is the single source of truth for WHAT we forecast and HOW it is
+# scored. It is committed alongside predictions so the rules are provable to have
+# pre-dated the outcome. Numbers marked "provisional" may be tuned ONLY before the
+# first published prediction; after that they are frozen — changing them would
+# corrupt the back-history and break the honesty the project exists for.
+#
+# Two distinct weightings live here, on two distinct data sources — do not
+# conflate them:
+#   * target.*      — computed from OUR TfL disruption snapshots. This is the
+#                     scored ground truth.
+#   * covariate.*   — computed from DfT Street Manager. Model INPUT only, never
+#                     the thing we score against.
+
+version: 1
+status: draft            # draft until the first published month, then frozen
+
+# ---------------------------------------------------------------------------
+# TARGET — the scored quantity
+# ---------------------------------------------------------------------------
+target:
+  name: disruption_burden
+  # Burden is a severity-weighted measure of how disrupted a borough is over a
+  # month, derived from the daily disruption snapshots (data/raw/*.json.gz).
+  source: tfl_disruption_feed
+
+  granularity: borough   # primary. corridor is a secondary, UNSCORED view in v1.
+
+  # Daily value for a borough = sum over disruptions present in that day's
+  # snapshot (attributed to the borough via its `location`) of the severity
+  # weight below. Presence-based, so it is robust to the feed's missing
+  # `created` field and to records being edited.
+  #
+  # Monthly burden = days_in_month * mean(daily value over the month's CAPTURED
+  # days). The mean-over-captured-days form degrades gracefully when a few daily
+  # snapshots are missing, rather than silently undercounting (see void_rule).
+  metric: days_in_month_times_mean_daily_weighted_presence
+
+  # Severity weights key off the TfL feed's `severity` DESCRIPTION (not the
+  # numeric level). Ordering follows internal/disruptions.SeverityRank; weights
+  # are provisional and monotone — closures dominate, minor works barely count.
+  severity_weights:        # provisional
+    Closure: 1.0
+    Severe: 0.8
+    Serious: 0.6
+    Moderate: 0.3
+    Minimal: 0.1
+    "No Exceptional Delays": 0.0
+    "No Issues": 0.0
+    _default: 0.1          # unrecognised severities: treat as minor, never drop
+
+  # Optional discrete sub-target kept for the log-score regime (v1: report only).
+  sub_target:
+    name: serious_plus_active_count
+    definition: count of distinct disruptions active in the month with severity rank >= Serious
+
+# ---------------------------------------------------------------------------
+# RESOLUTION — how the target is settled from the record
+# ---------------------------------------------------------------------------
+resolution:
+  # A borough-month resolves from the daily snapshots dated within that month.
+  snapshot_settle_days: 14     # publish/score 14 days after month-end, to let
+                               # late-entered and retracted records settle.
+                               # PROVISIONAL: validate/lengthen via lifecycle-
+                               # churn EDA once snapshots accrue.
+  dedup_key: id                # distinct disruptions keyed on feed `id`.
+
+  void_rule:
+    # Burden integrates over daily presence, so a missing snapshot day biases
+    # every borough that day. If coverage is too low, VOID the month and publish
+    # the gap — never hide an outage, never impute over a large hole.
+    min_coverage: 0.80         # captured_days / days_in_month; below this -> void
+    scope: month               # a missing day affects all boroughs equally
+
+# ---------------------------------------------------------------------------
+# SCORING
+# ---------------------------------------------------------------------------
+scoring:
+  primary:
+    target: disruption_burden
+    rule: CRPS                 # continuous, non-negative; lower is better
+    aggregate: mean_over_borough_months
+  secondary:
+    target: serious_plus_active_count
+    rule: log_score            # discrete count; reported, not headline in v1
+  calibration:
+    method: PIT_histogram      # across all resolved borough-months to date
+
+# ---------------------------------------------------------------------------
+# COVARIATES — model inputs (NOT scored). See internal/burden, internal/streetmanager.
+# ---------------------------------------------------------------------------
+covariate:
+  street_manager:
+    source: dft_street_manager        # cited in SOURCES.md, never committed
+    # Works burden = traffic-management-weighted work-days per borough-month,
+    # split planned vs emergency by work_category ("Immediate*" = emergency).
+    # These weights MUST stay in sync with internal/burden.TMWeight until a
+    # config loader is wired in step 7.
+    traffic_management_weights:       # provisional
+      "Road closure": 1.0
+      "Contra-flow": 0.8
+      "Lane closure": 0.6
+      "Multi-way signals": 0.6
+      "Two-way signals": 0.3
+      "Give and take": 0.3
+      "Priority working": 0.3
+      "Stop/go boards": 0.3
+      "Convoy workings": 0.3
+      "Some carriageway incursion": 0.2
+      "Temp obstruction 15 minute delay": 0.2
+      "No carriageway incursion": 0.05
+      _default: 0.3
+    emergency_categories_prefix: "Immediate"
+
+# ---------------------------------------------------------------------------
+# OPEN ITEMS to settle before freezing (status: draft)
+# ---------------------------------------------------------------------------
+open_items:
+  - Calibrate severity_weights and traffic_management_weights against observed
+    TfL-feed burden once enough snapshots accrue.
+  - Reconcile borough naming between the TfL feed (`location` parse) and Street
+    Manager (highway_authority normalisation) — e.g. "Kensington & Chelsea".
+  - Decide whether TfL (TLRN) and City of London are scored as their own
+    entities alongside the 32 boroughs.
+  - Confirm snapshot_settle_days (14) via lifecycle-churn EDA.
