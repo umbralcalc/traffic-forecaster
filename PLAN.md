@@ -1,35 +1,143 @@
 # traffic-forecaster — Repo Plan
 
-A monthly, honestly-scored forecasting project for London road disruptions, published as a
-frozen interactive dashboard. Single prediction stream, one Go/stochadex repo.
+A monthly, honestly-scored forecasting project for London road disruption,
+published as a frozen interactive dashboard. Single repo, Go + stochadex.
+
+> **Status (2026-06-07).** The live APIs have been verified and an exploratory
+> pass run. The target has moved from a *count of newly-starting disruptions* to
+> **disruption burden** (see below), and a major forward-looking data source —
+> **DfT Street Manager** — has been validated. This document supersedes the
+> original count-flow plan.
+
+## What changed since v1
+
+- **Target → disruption burden**, not a count of new disruptions. The EDA showed
+  the count-flow target was weak: planned roadworks dominate (~94%), severe events
+  are rare, and at any meaningful severity threshold the per-borough monthly count
+  is almost always 0 or 1 (sparse, low-information).
+- **The TfL disruption feed has no forward visibility** (zero future-dated starts)
+  and no creation timestamp — so "planned works as a forward covariate" is not
+  obtainable from it. We bring forward signal in from **DfT Street Manager**, whose
+  public archive carries permits with future `proposed_start_date` (validated:
+  ~12k London works dated ahead, up to 16 months out).
+- **Burden decomposes by data source**, which matches the structure cleanly:
+  planned + emergency *works* come from Street Manager; *non-works incidents*
+  (accidents, congestion, planned events) come only from the TfL feed.
+- **Two scoring regimes return.** Burden is continuous → **CRPS**; we also keep a
+  discrete count sub-target → **log score**. The original "single regime" caveat
+  is lifted.
+- **The cold-start is largely solved** for the dominant works component: Street
+  Manager gives ~6 years of historic London roadworks, so the works model can be
+  backtested offline now. Only the non-works incident tail and the live scored
+  ground truth must accrue forward from our own snapshots.
+- **Data-in-git policy fixed:** commit only our own snapshots/predictions/
+  resolutions; cite large external archives, never copy them in.
+
+---
 
 ## Framing
 
-This repo forecasts **London road disruptions**: per corridor (or borough, where sparse),
-the count — and optionally the severity mix — of disruptions in a calendar month. The data
-is the TfL Unified API's road disruption feed: a **count target**, daily-queryable,
-snapshot-resolved, scored with the **log score** (or discrete CRPS).
+The repo forecasts **monthly road-disruption burden per London borough** (corridor
+as a sparse secondary view). "Burden" is a severity/traffic-management-weighted
+sum of disruption-days — how disrupted a borough actually is over the month, not
+how many new disruptions begin. This turns the data's defining properties
+(long-running works, a persistent stock rather than a flow) from a liability into
+the signal.
 
-It was originally scoped with a second stream (cycle-hire demand, CRPS-scored). That's
-dropped: it had no historical archive (collect-it-yourself), a long lead time before the
-first honest prediction, and an ongoing always-on collector cost. Disruption forecasting is
-the better first target — already queryable (EDA immediately, no waiting), squarely in the
-road-congestion framing, and no continuously-running service: the snapshotter is one cheap
-daily pull (a scheduled job, not a daemon).
+Burden is modelled as an additive decomposition:
 
-**Methodological note:** as a single stream this repo demonstrates *one* scoring regime
-(log-score on counts), not two. That's a deliberate simplification for a first repo. The
-second (continuous/CRPS) regime can return later via the health repo or a future continuous
-traffic target — it was nice-to-have, not required.
+```
+burden(borough, month) = planned-works  +  emergency-works  +  non-works-incidents
+                         └─────── DfT Street Manager ───────┘   └─ TfL feed ─┘
+                          near-deterministic    reactive,         the genuine
+                          given the permit      historic-rate     stochastic tail
+                          pipeline              learnable
+```
 
-## DfT counts as a cheap companion (hold, don't build yet)
+- **planned works** — known ahead from the Street Manager permit pipeline; the
+  uncertainty is overruns, cancellations, and provisional→granted transitions.
+- **emergency works** — Street Manager "Immediate" categories; little forward
+  notice, modelled as a borough/seasonal rate.
+- **non-works incidents** — accidents, congestion, planned events; absent from
+  Street Manager, present only in the TfL disruption feed. The hardest term.
 
-DfT road traffic counts (AADF) are **annual, modelled-at-link-level, and revised** — wrong
-for a monthly heartbeat. But they're just an annual file download (no collector, no running
-cost), so they make a natural **long-horizon annual marquee prediction** sitting beside the
-monthly disruption forecasts. That gives the repo a fast-heartbeat-plus-slow-marquee shape
-cheaply, and mirrors the structure the health repo will have. Park it; revisit after the
-monthly stream is live.
+This is a deliberate first repo: one stream, one published artifact, but now with
+both a continuous (CRPS) and a discrete (log-score) scoring regime.
+
+---
+
+## Data sources
+
+Raw third-party data is **never committed** — it is cited in `SOURCES.md` and
+re-derived on demand. Only our own snapshots, predictions, and resolutions live in
+git (they are small, unique, and the proof-of-commit record).
+
+### TfL Unified API — disruption feed (the scored ground truth)
+
+- `GET /Road/all/Disruption?stripContent=true` — full London set in **one
+  unpaginated call** (~80 active records, ~270 KB). Captured as immutable daily
+  snapshots; the burden the forecast is scored against is computed from these.
+- Vocabularies: `GET /Road/Meta/Severities`, `GET /Road/Meta/Categories`.
+- Licence: TfL open data (modified OGL) — attribution required, not official TfL,
+  respect call limits. Keyless = 50 req/min (ample for one daily pull); an
+  `app_key` raises it to 500 req/min.
+
+### DfT Street Manager — street works (planned/emergency works backbone + history)
+
+- Public S3 archive, **no registration**:
+  `https://opendata.manage-roadworks.service.gov.uk/{type}/{YYYY}/{MM}.zip`
+  (`type` ∈ permit | activity | section_58; monthly, from 2020).
+- Carries `proposed_start_date`/`proposed_end_date` (forward-dated), actual
+  start/stop events, `work_category` (planned vs Immediate/emergency),
+  `traffic_management_type` (burden weight), `highway_authority` (London filter),
+  USRN, coordinates. England-wide; ~15% of records are London.
+- Licence: **Open Government Licence v3.0** (Crown copyright). Attribution string
+  recorded in `SOURCES.md` and on derived outputs.
+- **Format gotcha:** these are "streaming" zips (local headers + raw DEFLATE +
+  trailing data descriptor, *no central directory*) — `unzip` and Python
+  `zipfile` both reject them. `internal/streetmanager` walks the local headers and
+  inflates manually. Each entry is one JSON event; a month is ~1 GB / ~1M events.
+
+### DfT road traffic counts (AADF) — held
+
+Annual, modelled, revised — wrong for a monthly heartbeat, but a free annual file
+download. Parked as a possible long-horizon annual marquee (mirrors the planned
+health repo). Revisit after the monthly stream is live.
+
+---
+
+## What we verified against the live APIs (2026-06-07)
+
+**TfL disruption feed (cross-sectional, one snapshot, n=80):**
+- No pagination; full set in one call. **No `created` field** → first-appearance
+  is only reconstructable from our own daily snapshots.
+- Field casing differs from naive expectations: `startDateTime`/`endDateTime`,
+  `lastModifiedTime`, `corridorIds` (array), `subCategory`, `location`.
+- **Planned-dominated** (~94% `Works`); only ~5 unplanned records.
+- **Severe events rare** (Serious=4, Severe/Closure=0; bulk Minimal+Moderate).
+- **No forward visibility** — 0 future-dated starts; 35/80 still-open with end
+  dates out to 2028 (forward signal only via *continuation* of long works).
+- **Borough beats corridor** — `location` parses to a borough on 100% of records;
+  `corridorIds` empty on ~50%. Borough is the primary key.
+- Severity ordering *is* usable: `severityLevel` 5–10 is monotonic (5 Closure =
+  worst → 10 No Exceptional Delays), 0 No Issues a separate baseline. Implemented
+  as `disruptions.SeverityRank`.
+- Feed `category` vocabulary differs from `Meta/Categories` — don't build the
+  filter off the Meta endpoint without checking the `categories` query param.
+
+**Street Manager (permit/2026-05, full month streamed in ~63 s):**
+- 992,233 events; **151,467 London (15.3%); all 33 London authorities present.**
+- Full permit lifecycle (SUBMITTED → GRANTED → WORK_START → WORK_STOP →
+  CANCELLED/REFUSED) → both *planned* (proposed dates) and *realised* (start→stop)
+  windows are reconstructable. Events are lifecycle rows → **dedup by permit/work
+  reference** before computing burden.
+- `work_category` splits the decomposition for free: Minor/Standard/Major/Major
+  (PAA) = planned; "Immediate - urgent"/"Immediate - emergency" ≈ 33% = emergency.
+- `traffic_management_type` (Road closure, Lane closure, Multi-way signals, …) =
+  the burden-weight covariate.
+- **Forward signal confirmed:** 12,207 London works with `proposed_start_date`
+  after today, furthest +16 months. The full 6-yr London history is ~70 min of
+  one-off streaming — a real offline backtest set.
 
 ---
 
@@ -38,161 +146,161 @@ monthly stream is live.
 ```
 traffic-forecaster/
   cmd/
-    pull-disruptions/ # daily disruption snapshotter (scheduled job)
-    eda/              # one-shot EDA dumps (CSV/JSON for local notebooks)
-    forecast/         # monthly: generate predictions for next period
-    resolve/          # monthly: score last period's predictions
-    build-dashboard/  # emit the self-contained interactive artifact
+    pull-disruptions/    # daily disruption snapshotter (scheduled GitHub Action)   [built]
+    eda/                 # cross-sectional EDA over snapshots + live vocab           [built]
+    ingest-streetmanager/# stream a month, filter to London, report                 [built]
+    forecast/            # monthly: generate the burden predictive distribution      [todo]
+    resolve/             # monthly: score last period's predictions                  [todo]
+    build-dashboard/     # emit the self-contained interactive artifact              [todo]
   internal/
-    tfl/              # API client (auth, rate-limit, retry, typed responses)
-    disruptions/      # ingestion, models, scoring
-    scoring/          # log-score, discrete CRPS, calibration aggregation
-    store/            # append-only data files (the canonical record)
+    tfl/                 # TfL API client (retry/backoff, timestamped capture)        [built]
+    store/               # gzipped immutable snapshot read/write                      [built]
+    disruptions/         # severity ranking, borough parse, planned split             [built]
+    streetmanager/       # streaming-zip parser + London filter                       [built]
+    burden/              # burden metric, per-work window reconstruction, dedup        [todo]
+    scoring/             # CRPS (burden) + log-score (counts), calibration            [todo]
   data/
-    raw/              # immutable daily snapshots (timestamped)
-    predictions/      # append-only: committed predictions per period
-    resolutions/      # append-only: scored outcomes per period
-  dashboard/          # static viewer template (data baked in at build)
+    raw/                 # immutable daily disruption snapshots (committed)
+    streetmanager/       # London extracts (GITIGNORED — cite, don't commit)
+    predictions/         # append-only committed predictions per period
+    resolutions/         # append-only scored outcomes per period
   config/
-    disruptions.yaml  # corridors/boroughs, severity filter, snapshot + void rules
-  README.md           # methodology page (versioned alongside predictions)
+    disruptions.yaml     # boroughs, severity threshold, burden weights, void rules
+  dashboard/             # static viewer template (data baked in at build)
+  SOURCES.md             # data source citations + OGL attribution
+  README.md              # methodology page (versioned alongside predictions)
 ```
 
-**Commit discipline (free proof-of-commit):** predictions land in one commit; resolutions
-in a later commit. The repo's own git log evidences "predicted before knew" with no extra
-infrastructure. `data/raw/` snapshots are immutable; never rewrite them.
+**Commit discipline (free proof-of-commit):** predictions land in one commit,
+resolutions in a later commit; the git log evidences "predicted before we knew."
+`data/raw/` snapshots are immutable; never rewrite them. The daily Action commits
+snapshots on its own schedule, so pull before manual pushes.
 
-**stochadex role:** the forecasting model in `disruptions/` is a stochadex configuration —
-the engine producing the predictive distribution over monthly counts. The snapshotter and
-ingestion are plain Go around the stochadex core.
-
----
-
-## TfL API — auth & limits
-
-- Register at the API portal for an **app_key** (subscribe to a data plan). Append
-  `?app_key=...` to requests. `app_id` is no longer required.
-- Licence: **modified OGL** — attribution required; don't market as official TfL; respect
-  call limits. Re-use/republication permitted (this is why TfL works where scraping a
-  commercial feed wouldn't). Record the attribution string in the methodology page.
-- Client must handle: rate-limit backoff, retry with jitter, and **logging the capture
-  timestamp** on every record (resolution rules depend on it).
-
-### Verify against the live API before writing much
-Two specs below are from the Swagger schema and should be confirmed with a real key:
-- Whether `/Road/all/Disruption` returns the full London set in one call or needs
-  pagination / per-corridor iteration. (Affects the snapshotter loop.)
-- The exact fields and casing returned by the disruption feed with `stripContent=true`.
+**stochadex role:** the burden model in `internal/burden` + `forecast` is a
+stochadex configuration producing the predictive distribution; the snapshotter,
+ingest, and scoring are plain Go around it.
 
 ---
 
-## Endpoints
+## The target: disruption burden
 
-- `GET /Road` — all TfL-managed roads (corridor ids, e.g. A406, A2).
-- `GET /Road/{ids}/Disruption` — active disruptions; filter by `severities`, `categories`;
-  `stripContent=true` for lean payloads; `application/geo+json` available.
-- `GET /Road/all/Street/Disruption?startDate=&endDate=` — disrupted streets in a window.
-- `GET /Road/{ids}/Status?dateRangeNullable.startDate=&...endDate=` — aggregated status
-  (coarser categorical; not the primary target).
-- `GET /Road/Meta/Severities`, `GET /Road/Meta/Categories` — the valid filter vocabularies.
-  **Pull these first**; the resolution criterion is defined in their terms.
-- `GET /AccidentStats/{year}` — annual per-incident data (covariate/context, not target).
+**Definition (to finalise in `config/disruptions.yaml`):** for borough *b* and
+month *m*,
 
----
+```
+burden(b, m) = Σ_days d in m  Σ_active disruptions  weight(severity, traffic_mgmt)
+```
 
-## Snapshotter spec (`cmd/pull-disruptions`)
+i.e. a weighted count of disruption-days, summed over the daily snapshots in the
+month. Computing from daily presence sidesteps the missing-`created` problem and
+is robust to records being edited. A discrete sub-target (count of active
+Serious+ disruptions) is kept for the log-score regime.
 
-- **Daily** scheduled pull (disruptions evolve slowly). Can run as a **GitHub Action** on a
-  cron schedule — no always-on service, no running cost.
-- Pull `/Road/all/Disruption` (or per corridor) with `stripContent=true`. Write one
-  immutable daily snapshot to `data/raw/YYYY-MM-DD.json` with `captured_at`.
-- Keep the **full lifecycle** per record: `id`, `created`, `lastUpdate`, `startDate`,
-  `endDate`, `severity`, `category`, `corridor`. Daily snapshots let you reconstruct how
-  records changed — essential for an honest snapshot rule.
+**Resolution source:** our daily disruption snapshots (the honestly-scored ground
+truth). Street Manager is an *input/covariate* and an *offline backtest* source —
+never conflated with the scored truth (permits ≠ realised disruption).
 
----
+**Snapshot/revision rule:** settle on the snapshot taken **14 days after
+month-end**. Validate or lengthen via lifecycle-churn EDA once snapshots accrue;
+decide once, never change (changing it corrupts the back-history).
 
-## Resolution criterion (pre-commit → config/disruptions.yaml + methodology README)
+**Void rule:** because burden integrates over daily presence, missing snapshot
+days bias it directly. If the snapshotter missed > N days in a borough-month,
+**void** that borough-month and **publish the gap**. Hiding outages is the one
+dishonesty the project refuses.
 
-- **Target:** for corridor/borough X, the **count of disruptions with severity ≥ {chosen
-  threshold}** whose `startDate` falls in the target month. Optionally also severity mix as
-  a categorical sub-prediction.
-- **Resolution source:** the daily snapshots; count distinct disruption `id`s meeting the
-  filter with `startDate` in-month.
-- **Snapshot/revision rule:** count as observed in the snapshot taken **14 days after
-  month-end** (lets late-entered and retracted records settle). Decide once; never change —
-  changing it corrupts the back-history.
-- **Void rule:** if the snapshotter missed > N days in the target month, **void** that
-  corridor's prediction for the month and **publish the gap**. Hiding outages is the one
-  dishonesty the project exists to refuse.
-- **De-dup rule:** records recur across snapshots and can be edited — key on `id`, take the
-  settled record at the 14-day snapshot.
+**De-dup rule:** key disruptions on `id`; key Street Manager events on permit/work
+reference, reconstructing each work's planned and realised window.
 
 ---
 
-## EDA queries (`cmd/eda` → dump CSV for local notebooks) — run now, data already queryable
+## Covariates
 
-1. **Severity & category vocabularies.** Dump `/Road/Meta/Severities` + `/Road/Meta/Categories`.
-   → defines the resolution filter precisely before any prediction.
-2. **Corridor base rates.** Over a back-window of daily pulls, count disruptions per corridor
-   per week by severity. → the Poisson/neg-binomial base rates; identifies which corridors
-   have enough events to forecast (sparse ones aggregate to borough level).
-3. **Lifecycle churn.** For a sample of disruption ids, track `lastUpdate` and appearance/
-   disappearance across daily snapshots. → quantifies retroactive editing; **validates the
-   14-day snapshot rule** (if records still move after 14 days, lengthen it).
-4. **Planned vs unplanned split.** By category. → planned works are partly predictable from
-   their announced future `startDate` (a known forward covariate); unplanned are the genuine
-   forecasting challenge.
-5. **Seasonality.** Disruption counts by month and day-of-week over available history.
+- **Pipeline (strongest):** permit count & proposed duration starting in the
+  month; `work_category`, `traffic_management_type` (closure > signals > minor),
+  `is_traffic_sensitive`, carriageway vs footway, promoter (utility vs authority),
+  permit status / provisional, **Section 58** restrictions (streets that can't be
+  dug → suppress works).
+- **Calendar:** month, weekday composition, school/bank holidays, festive TLRN
+  works embargoes, major-events calendar (marathon, carnival, NYE).
+- **Weather (unplanned tail):** cold snaps → burst mains; heavy rain → flooding /
+  emergency works.
+- **Structural exposure (per-borough offsets):** TLRN / road length, population,
+  traffic volume (DfT AADF), apparatus density.
+- **Autoregressive:** recent realised burden, plus long works carrying in from
+  prior months.
 
 ---
 
 ## Model (stochadex)
 
-Per-corridor (per-borough for sparse ones) **count model** — Poisson or negative-binomial
-with seasonality and planned-works as a known forward covariate — emitting a predictive
-**distribution** over the monthly count. Log-score (or discrete CRPS) against the settled
-count. Resist point forecasts; the distribution is the product. Backtest offline against
-historical snapshots before publishing anything.
+Per-borough (per-corridor where dense) **burden model** emitting a predictive
+distribution, built as the additive decomposition above:
+
+- **planned-works burden** — near-deterministic given the permit pipeline; model
+  duration overruns, cancellation, and provisional→granted realisation.
+- **emergency-works burden** — borough × seasonal rate from Street Manager
+  "Immediate" history.
+- **non-works incident burden** — the stochastic term, from the TfL feed history.
+
+Scored with **CRPS** against the settled burden, plus **log score** on the
+discrete Serious+ active-count sub-target. Resist point forecasts; the
+distribution is the product. **Backtest offline** against Street Manager history
+(works terms) and accruing snapshots (incident term) before publishing.
 
 ---
 
 ## Dashboard (`cmd/build-dashboard`)
 
-- Static, self-contained bundle. Data for the displayed window **baked in at build** — no
-  live API calls, no browser storage.
-- **Sliding window:** fixed **6 months backward** (resolved: predicted distribution overlaid
-  on realised count) + **1 month forward** (the prediction); planned works visible further
-  out as a known covariate.
-- London map with **corridor/borough shading** by predicted/observed count. Timeline scrubber
-  at top. Click a corridor → diagnostic pop-up: predicted distribution, and once resolved,
-  the overlay of actual vs predicted, plus that corridor's score.
-- Running **calibration plot** across everything resolved to date — the actual product; same
-  plot each month, more points over time.
-- Each month's build is **frozen and stored in R2** under that month's key (the immutable
-  human-readable witness). The repo's `data/` files are the machine-readable canonical record.
-- You manually copy the latest build into the blog's `/traffic-forecasts` page.
+- Static, self-contained bundle; data for the displayed window **baked in at
+  build** — no live API calls, no browser storage.
+- **Sliding window:** 6 months back (predicted burden distribution overlaid on
+  realised) + 1 month forward (the prediction); planned works visible further out
+  as a known covariate from the Street Manager pipeline.
+- London map with **borough shading** by predicted/observed burden; timeline
+  scrubber; click a borough → predicted distribution and, once resolved, actual
+  vs predicted overlay + that borough's score.
+- Running **calibration plot** across everything resolved to date — the real
+  product; same plot each month, more points over time.
+- Each month's build is **frozen and stored in R2** under that month's key (the
+  human-readable witness); `data/` files are the machine-readable canonical
+  record. Manually copy the latest build into the blog's `/traffic-forecasts`.
 
 ---
 
-## Build order
+## Build order (with status)
 
-1. **Repo skeleton + `internal/tfl` client** (auth, rate-limit, retry, timestamped capture).
-   Verify the two live-API specs above.
-2. **`cmd/pull-disruptions`** as a scheduled daily job (GitHub Action). Start banking daily
-   snapshots — cheap, no service.
-3. **EDA** (queries 1–5) from existing queryable data — fastest path to first insight.
-4. **Resolution criterion** into `config/disruptions.yaml` + methodology README, **validated
-   by EDA** (esp. the 14-day snapshot rule via lifecycle churn).
-5. **stochadex count model**; backtest scoring offline.
-6. **`cmd/forecast` + `cmd/resolve`** monthly commands (the heartbeat).
-7. **`cmd/build-dashboard`** + first frozen R2 snapshot.
-8. First published month: predictions only (nothing to resolve yet); honest "the calibration
-   curve is noise until it isn't" framing from the outset.
+1. ✅ Repo skeleton + `internal/tfl` client; live-API specs verified.
+2. ✅ `cmd/pull-disruptions` daily snapshotter + GitHub Action (gzipped, immutable).
+   *Pending: push to GitHub + first scheduled run to start banking history.*
+3. ✅ EDA (`cmd/eda`) — cross-sectional findings above. *Time-series EDA (base
+   rates, lifecycle churn, seasonality) pending accumulated snapshots.*
+4. ✅ Street Manager ingest (`cmd/ingest-streetmanager`, `internal/streetmanager`)
+   — forward planned works validated; pivot to burden confirmed.
+5. ⏭ **Burden backtest dataset** — sweep the full London Street Manager history,
+   dedup events into per-work windows, compute the monthly borough burden series
+   (`internal/burden`).
+6. ⏭ **Resolution criterion + burden weights** into `config/disruptions.yaml` +
+   methodology README; validate the 14-day rule as churn data arrives.
+7. ⏭ **stochadex burden model**; backtest CRPS + log-score offline.
+8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
+9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
+10. ⏭ First published month: predictions only; honest "the calibration curve is
+    noise until it isn't" framing from the outset.
+
+---
 
 ## Open decisions to settle as you build
-- **Severity threshold** for the target — set from EDA query 1 + base rates in query 2.
-- **Corridor vs borough granularity** — set the cutoff from query 2 (per-corridor where
-  dense, per-borough where sparse).
-- **Snapshot-lag length (14 days?)** — confirm or lengthen from query 3.
-- **DfT annual marquee** — whether/when to add as the long-horizon companion.
+
+- **Burden weighting** — severity × traffic-management weights, and whether to
+  threshold (Serious+) or weight continuously. Set from Street Manager + snapshot
+  EDA.
+- **Granularity** — borough primary (confirmed); corridor as a sparse secondary
+  view where dense.
+- **Snapshot-lag length (14 days?)** — confirm or lengthen from lifecycle churn
+  once snapshots accrue.
+- **Ground-truth boundary** — burden scored from the TfL feed; Street Manager for
+  backtest/covariate only. Keep them distinct.
+- **Forward planned-works freshness** — Street Manager monthly archive (≤1-month
+  lag) vs supplementing with the live TfL street feed at forecast time.
+- **DfT AADF annual marquee** — whether/when to add as the long-horizon companion.
