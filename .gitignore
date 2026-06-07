@@ -7,3 +7,6 @@
 
 # Street Manager data is a large public archive — we cite the source, never commit copies
 /data/streetmanager/
+
+# Burden series is derived from Street Manager (external) data — regenerated, not committed
+/data/burden/
