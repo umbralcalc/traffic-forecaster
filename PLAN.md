@@ -248,6 +248,22 @@ discrete Serious+ active-count sub-target. Resist point forecasts; the
 distribution is the product. **Backtest offline** against Street Manager history
 (works terms) and accruing snapshots (incident term) before publishing.
 
+**Network propagation (candidate extension).** Burden is naturally a scalar field
+on the road graph, so a strong upgrade is to propagate disruption up/downstream —
+a closure on a link raises congestion on its neighbours. Adjacency is buildable
+from the geometry we already have (TfL `point`/`geography`, Street Manager
+`lineString`/USRN/coordinates, corridor ids). Two constraints govern it, both from
+the fact that severity is not a clean ordinal:
+- **Severity is two axes, not one.** `Closure` is an *intervention* state; `Severe
+  → Minimal` is a *congestion/delay* ladder. The `severity_weights` scalar
+  conflates them for scoring; it must not be treated as a faithful ordinal in the
+  model.
+- **The number→category map is one-way.** Never invert a (propagated) scalar back
+  to a category. Carry the categorical label as a separate attribute, and model
+  explicit *cause→effect* transitions (a closure manifests as congestion on
+  neighbours — `Closure`≢`Gridlocked`), rather than re-labelling a neighbour from
+  its scalar.
+
 ---
 
 ## Dashboard (`cmd/build-dashboard`)

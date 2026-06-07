@@ -26,6 +26,10 @@ target:
   source: tfl_disruption_feed
 
   granularity: borough   # primary. corridor is a secondary, UNSCORED view in v1.
+  # Scored entities = the 32 boroughs + City of London + TfL (TLRN). Correlated/
+  # overlapping entities (the TLRN crosses boroughs) are KEPT for now and may be
+  # dropped or merged later if they prove redundant — decided 2026-06-07.
+  scored_entities: boroughs_plus_city_and_tlrn
 
   # Daily value for a borough = sum over disruptions present in that day's
   # snapshot (attributed to the borough via its `location`) of the severity
@@ -41,6 +45,11 @@ target:
   # numeric level). Ordering follows internal/disruptions.SeverityRank; weights
   # are provisional and monotone — closures dominate, minor works barely count.
   severity_weights:        # provisional
+    # NOTE: this is a ONE-WAY map (category -> number) for building the scored
+    # scalar. Do NOT invert number -> category. 'Closure' is an INTERVENTION
+    # state, not a point on the delay ladder (Severe..Minimal), so the scale is
+    # not a true ordinal; and a closure propagates downstream as CONGESTION, never
+    # as another 'Closure'. See open_items + PLAN.md "network propagation" notes.
     Closure: 1.0
     Severe: 0.8
     Serious: 0.6
@@ -121,6 +130,8 @@ open_items:
     TfL-feed burden once enough snapshots accrue.
   - Reconcile borough naming between the TfL feed (`location` parse) and Street
     Manager (highway_authority normalisation) — e.g. "Kensington & Chelsea".
-  - Decide whether TfL (TLRN) and City of London are scored as their own
-    entities alongside the 32 boroughs.
   - Confirm snapshot_settle_days (14) via lifecycle-churn EDA.
+  - If a network-propagation model is built (burden as a scalar field on the road
+    graph): carry the severity CATEGORY as a separate attribute, never recover it
+    from the scalar; model cause->effect transitions (closure -> congestion on
+    neighbours) rather than inverting severity_weights.
