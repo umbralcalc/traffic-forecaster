@@ -302,11 +302,15 @@ the fact that severity is not a clean ordinal:
    (`internal/scoring` CRPS/PIT, `internal/forecast` empirical baselines,
    `cmd/backtest`): on the works-burden series, **`seasonal+recent` is the honest
    floor** — mean CRPS ≈139 and best-calibrated, ~halving the point-forecast
-   baseline's CRPS. *Next within #7:* add the known permit **pipeline as a
-   covariate** (the planned term — where the forward signal pays off), then the
-   stochadex generative / network-propagation model — all scored by this same
-   harness. NB the backtest is against the Street-Manager works proxy; the live
-   scored target (TfL-feed burden) accrues from snapshots.
+   baseline's CRPS. ✅ **Pipeline covariate** (`burden.PipelineSeries` vintaged by
+   each work's first-seen filing date; `forecast.PipelineResidual`): centring on
+   the known forward permit book + empirical residual **cuts CRPS ~35%** (90.6 vs
+   the 138.8 floor) — the forward signal is real and measurable. *Next within #7:*
+   tighten calibration (the pipeline model is sharper but its symmetric residual
+   misses the burden's skew — cal.unif 46 vs 10), then the stochadex generative /
+   network-propagation model — all scored by this same harness. NB the backtest is
+   against the Street-Manager works proxy; the live scored target (TfL-feed
+   burden) accrues from snapshots.
 8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
 9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
 10. ⏭ First published month: predictions only; honest "the calibration curve is

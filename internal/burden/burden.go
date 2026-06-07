@@ -16,6 +16,7 @@
 package burden
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -33,17 +34,39 @@ type Work struct {
 	PlannedEnd   time.Time
 	ActualStart  time.Time
 	ActualEnd    time.Time
-	lastEvent    time.Time
+	// FirstSeen is the earliest event_time for this work — when it became known.
+	// The pipeline estimate uses it to count only works filed before a forecast
+	// month began (so reactive emergency works correctly drop out of the forward
+	// view).
+	FirstSeen time.Time
+	lastEvent time.Time
 }
 
 // Works accumulates the latest-known state per work reference.
 type Works map[string]*Work
 
-// Apply folds one event into the work table, keeping the most recent event's
-// state per work (events carry the full object state, so the latest is the most
-// complete). Records without a usable reference are ignored.
+// Apply folds one event into the work table. It tracks FirstSeen (the earliest
+// event) for vintaging, and keeps the latest event's state for the realised
+// window (events carry the full object state, so the latest is most complete).
+// object_data is unmarshalled once per event for speed. Records without a usable
+// reference are ignored.
 func (ws Works) Apply(r streetmanager.Record) {
-	ref := firstNonEmpty(r.Field("work_reference_number"), r.Field("permit_reference_number"))
+	var od map[string]json.RawMessage
+	if json.Unmarshal(r.ObjectData, &od) != nil {
+		return
+	}
+	get := func(k string) string {
+		raw, ok := od[k]
+		if !ok {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return ""
+		}
+		return s
+	}
+	ref := firstNonEmpty(get("work_reference_number"), get("permit_reference_number"))
 	if ref == "" {
 		return
 	}
@@ -52,17 +75,21 @@ func (ws Works) Apply(r streetmanager.Record) {
 	if !ok {
 		w = &Work{Ref: ref}
 		ws[ref] = w
-	} else if !et.After(w.lastEvent) {
-		return // older or equal event; keep current state
+	}
+	if w.FirstSeen.IsZero() || (!et.IsZero() && et.Before(w.FirstSeen)) {
+		w.FirstSeen = et
+	}
+	if ok && !et.After(w.lastEvent) {
+		return // older event: FirstSeen already updated, keep latest state
 	}
 	w.lastEvent = et
-	w.Borough = Borough(r.HighwayAuthority())
-	w.Category = r.Field("work_category")
-	w.TrafficMgmt = firstNonEmpty(r.Field("current_traffic_management_type"), r.Field("traffic_management_type"))
-	w.PlannedStart = parseTime(r.Field("proposed_start_date"))
-	w.PlannedEnd = parseTime(r.Field("proposed_end_date"))
-	w.ActualStart = parseTime(r.Field("actual_start_date_time"))
-	w.ActualEnd = parseTime(r.Field("actual_end_date_time"))
+	w.Borough = Borough(get("highway_authority"))
+	w.Category = get("work_category")
+	w.TrafficMgmt = firstNonEmpty(get("current_traffic_management_type"), get("traffic_management_type"))
+	w.PlannedStart = parseTime(get("proposed_start_date"))
+	w.PlannedEnd = parseTime(get("proposed_end_date"))
+	w.ActualStart = parseTime(get("actual_start_date_time"))
+	w.ActualEnd = parseTime(get("actual_end_date_time"))
 }
 
 // Window returns the work's active interval, preferring realised (actual) dates
@@ -71,6 +98,15 @@ func (w *Work) Window() (start, end time.Time, ok bool) {
 	if !w.ActualStart.IsZero() && !w.ActualEnd.IsZero() && w.ActualEnd.After(w.ActualStart) {
 		return w.ActualStart, w.ActualEnd, true
 	}
+	if !w.PlannedStart.IsZero() && !w.PlannedEnd.IsZero() && w.PlannedEnd.After(w.PlannedStart) {
+		return w.PlannedStart, w.PlannedEnd, true
+	}
+	return time.Time{}, time.Time{}, false
+}
+
+// PlannedWindow returns the work's proposed interval, used for the forward
+// pipeline estimate (what was scheduled, regardless of what actually happened).
+func (w *Work) PlannedWindow() (start, end time.Time, ok bool) {
 	if !w.PlannedStart.IsZero() && !w.PlannedEnd.IsZero() && w.PlannedEnd.After(w.PlannedStart) {
 		return w.PlannedStart, w.PlannedEnd, true
 	}
@@ -133,6 +169,51 @@ func (ws Works) Series(from, to time.Time) []Row {
 			} else {
 				c.PlannedDays += days
 			}
+		}
+	}
+	return flatten(grid)
+}
+
+// PipelineSeries computes the FORWARD pipeline estimate of works burden per
+// borough-month over [from, to], vintaged honestly: a work contributes to month
+// m only if it was first seen (filed) before m began, and only via its PROPOSED
+// window. Reactive emergency works — filed at the time they happen — therefore
+// drop out of the estimate for any month they would otherwise fall in, which is
+// exactly the known-ahead planned signal we want as a covariate.
+//
+// v1 simplification: proposed dates are taken from the work's latest known state,
+// not re-vintaged to the forecast instant; only the filing (FirstSeen) is gated.
+func (ws Works) PipelineSeries(from, to time.Time) []Row {
+	grid := map[string]map[string]*Cell{}
+	for _, w := range ws {
+		start, end, ok := w.PlannedWindow()
+		if !ok || w.Borough == "" {
+			continue
+		}
+		weight := TMWeight(w.TrafficMgmt)
+		for m := monthStart(maxTime(start, from)); !m.After(end) && !m.After(to); m = m.AddDate(0, 1, 0) {
+			// As-of gate: only works filed before this month began are "known".
+			if !w.FirstSeen.IsZero() && !w.FirstSeen.Before(m) {
+				continue
+			}
+			days := overlapDays(start, end, m, m.AddDate(0, 1, 0))
+			if days <= 0 {
+				continue
+			}
+			key := m.Format("2006-01")
+			byBorough := grid[key]
+			if byBorough == nil {
+				byBorough = map[string]*Cell{}
+				grid[key] = byBorough
+			}
+			c := byBorough[w.Borough]
+			if c == nil {
+				c = &Cell{}
+				byBorough[w.Borough] = c
+			}
+			c.Works++
+			c.WorkDays += days
+			c.WeightedDays += weight * days
 		}
 	}
 	return flatten(grid)

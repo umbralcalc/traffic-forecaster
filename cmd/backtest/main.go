@@ -45,6 +45,7 @@ func run(in, col, lastRealised string, minHistory int) error {
 		forecast.RecentWindow{K: 12},
 		forecast.Seasonal{FallbackK: 12},
 		forecast.SeasonalRecent{K: 12},
+		forecast.PipelineResidual{FallbackK: 12},
 	}
 	results := forecast.Backtest(series, models, minHistory)
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
@@ -105,8 +106,12 @@ func loadSeries(path, col, lastRealised string) (map[string][]forecast.Point, in
 		if err != nil {
 			continue
 		}
+		var cov float64
+		if ci, ok := idx["pipeline_weighted_days"]; ok && ci < len(rec) {
+			cov, _ = strconv.ParseFloat(rec[ci], 64) // forward pipeline covariate (0 if blank)
+		}
 		borough := rec[idx["borough"]]
-		series[borough] = append(series[borough], forecast.Point{Year: y, Month: m, Value: v})
+		series[borough] = append(series[borough], forecast.Point{Year: y, Month: m, Value: v, Covariate: cov})
 		monthSet[month] = true
 	}
 	return series, len(series), len(monthSet), nil

@@ -44,6 +44,29 @@ func TestRecentWindowAbstainsOnEmpty(t *testing.T) {
 	}
 }
 
+func TestPipelineResidual(t *testing.T) {
+	// History: realised exceeds pipeline by +5 and +7 (emergency/overrun gap).
+	hist := []Point{
+		{Year: 2025, Month: 1, Value: 15, Covariate: 10},
+		{Year: 2025, Month: 2, Value: 17, Covariate: 10},
+	}
+	target := Point{Year: 2025, Month: 3, Covariate: 20}
+	got := PipelineResidual{FallbackK: 6}.Predict(hist, target)
+	// Ensemble = target.Covariate + {residuals} = 20 + {5,7} = {25, 27}.
+	if len(got) != 2 || got[0] != 25 || got[1] != 27 {
+		t.Fatalf("pipeline+residual samples = %v, want [25 27]", got)
+	}
+}
+
+func TestPipelineResidualFallsBackWithoutCovariate(t *testing.T) {
+	hist := mkSeries([]float64{1, 2, 3, 4}, 2025, 1)
+	target := Point{Year: 2025, Month: 5, Covariate: 0} // no pipeline known
+	got := PipelineResidual{FallbackK: 2}.Predict(hist, target)
+	if len(got) == 0 {
+		t.Fatal("expected fallback samples, got abstain")
+	}
+}
+
 func TestBacktestRespectsMinHistoryAndNoLeakage(t *testing.T) {
 	// Strictly increasing series; with min history 3, points 3..N are scored.
 	series := map[string][]Point{

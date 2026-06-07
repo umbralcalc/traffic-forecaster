@@ -65,6 +65,48 @@ func rec(eventTime, ha, cat, tm, ps, pe, as, ae string) streetmanager.Record {
 	return streetmanager.Record{EventTime: eventTime, ObjectData: b}
 }
 
+func recAt(eventTime, ref, ha, tm, ps, pe string) streetmanager.Record {
+	obj := map[string]string{
+		"work_reference_number":   ref,
+		"highway_authority":       ha,
+		"work_category":           "Standard",
+		"traffic_management_type": tm,
+		"proposed_start_date":     ps,
+		"proposed_end_date":       pe,
+	}
+	b, _ := json.Marshal(obj)
+	return streetmanager.Record{EventTime: eventTime, ObjectData: b}
+}
+
+func TestPipelineSeriesAsOfGate(t *testing.T) {
+	ws := Works{}
+	// Work A: filed in April, scheduled for June -> KNOWN before June starts.
+	ws.Apply(recAt("2026-04-10T00:00:00Z", "A", "LONDON BOROUGH OF SOUTHWARK", "Lane closure",
+		"2026-06-05T00:00:00Z", "2026-06-15T00:00:00Z"))
+	// Work B: filed mid-June, active in June -> NOT known before June starts
+	// (mimics a reactive/late work). Must be excluded from June's pipeline.
+	ws.Apply(recAt("2026-06-12T00:00:00Z", "B", "LONDON BOROUGH OF SOUTHWARK", "Lane closure",
+		"2026-06-12T00:00:00Z", "2026-06-22T00:00:00Z"))
+
+	rows := ws.PipelineSeries(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC))
+	var june *Row
+	for i := range rows {
+		if rows[i].Month == "2026-06" {
+			june = &rows[i]
+		}
+	}
+	if june == nil {
+		t.Fatal("expected a June pipeline row")
+	}
+	if june.Works != 1 {
+		t.Errorf("June pipeline works = %d, want 1 (only the pre-filed work A)", june.Works)
+	}
+	// A spans 5..15 Jun = 10 days, weight 0.6 -> 6 weighted days.
+	if june.WeightedDays != 6 {
+		t.Errorf("June pipeline weighted = %v, want 6", june.WeightedDays)
+	}
+}
+
 func TestWorksLatestWinsAndSeries(t *testing.T) {
 	ws := Works{}
 	// Older event: planned only.

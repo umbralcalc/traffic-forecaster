@@ -69,7 +69,12 @@ func run(inDir, out, from, to string) error {
 	fmt.Printf("loaded %d events across %d files -> %d distinct works\n", events, len(paths), len(ws))
 
 	rows := ws.Series(fromT, toT)
-	if err := writeCSV(out, rows); err != nil {
+	// Forward pipeline estimate (vintaged) joined on (month, borough).
+	pipeline := map[string]float64{}
+	for _, p := range ws.PipelineSeries(fromT, toT) {
+		pipeline[p.Month+"|"+p.Borough] = p.WeightedDays
+	}
+	if err := writeCSV(out, rows, pipeline); err != nil {
 		return err
 	}
 	summarise(rows, out)
@@ -103,7 +108,7 @@ func readExtract(path string, ws burden.Works) (int, error) {
 	return n, sc.Err()
 }
 
-func writeCSV(out string, rows []burden.Row) error {
+func writeCSV(out string, rows []burden.Row, pipeline map[string]float64) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
@@ -114,12 +119,13 @@ func writeCSV(out string, rows []burden.Row) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{"month", "borough", "works", "work_days", "weighted_days", "planned_days", "emergency_days"})
+	w.Write([]string{"month", "borough", "works", "work_days", "weighted_days", "planned_days", "emergency_days", "pipeline_weighted_days"})
 	for _, r := range rows {
 		w.Write([]string{
 			r.Month, r.Borough,
 			strconv.Itoa(r.Works),
 			f2(r.WorkDays), f2(r.WeightedDays), f2(r.PlannedDays), f2(r.EmergencyDays),
+			f2(pipeline[r.Month+"|"+r.Borough]),
 		})
 	}
 	return w.Error()

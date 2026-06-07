@@ -13,10 +13,13 @@ import (
 	"github.com/umbralcalc/traffic-forecaster/internal/scoring"
 )
 
-// Point is one entity-month observation of the (works) burden series.
+// Point is one entity-month observation of the (works) burden series. Covariate
+// is the forward pipeline estimate for that month — known at forecast time
+// (vintaged), so a model may use the target's Covariate without leakage.
 type Point struct {
 	Year, Month int
 	Value       float64
+	Covariate   float64
 }
 
 // index is a sortable month key (months since year 0).
@@ -91,6 +94,36 @@ func (m SeasonalRecent) Predict(history []Point, target Point) []float64 {
 	out = append(out, RecentWindow{K: m.K}.Predict(history, target)...)
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// PipelineResidual centres the forecast on the target month's known permit
+// pipeline and adds the empirical distribution of past (realised - pipeline)
+// residuals — which capture the emergency works, overruns, and late filings the
+// forward pipeline cannot see. This is where the forward signal earns its keep.
+// Falls back to SeasonalRecent when no pipeline is known for the target.
+type PipelineResidual struct{ FallbackK int }
+
+func (PipelineResidual) Name() string { return "pipeline+residual" }
+func (m PipelineResidual) Predict(history []Point, target Point) []float64 {
+	if target.Covariate <= 0 {
+		return SeasonalRecent{K: m.FallbackK}.Predict(history, target)
+	}
+	res := make([]float64, 0, len(history))
+	for _, h := range history {
+		res = append(res, h.Value-h.Covariate) // realised minus as-of pipeline
+	}
+	if len(res) == 0 {
+		return []float64{target.Covariate}
+	}
+	out := make([]float64, len(res))
+	for i, r := range res {
+		v := target.Covariate + r
+		if v < 0 {
+			v = 0 // burden is non-negative
+		}
+		out[i] = v
 	}
 	return out
 }
