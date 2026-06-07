@@ -1,0 +1,9 @@
+# Build artifacts
+/bin/
+*.test
+
+# Local secrets — the TfL app_key belongs in a repo secret / shell env, never committed
+.env
+
+# Street Manager data is a large public archive — we cite the source, never commit copies
+/data/streetmanager/
