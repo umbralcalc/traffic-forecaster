@@ -37,10 +37,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- data/raw; then
+          # Stage first, then check the staged diff: `git diff --quiet` ignores
+          # untracked files, so a brand-new day's snapshot would otherwise be
+          # seen as "no change" and silently dropped.
+          git add data/raw
+          if git diff --cached --quiet; then
             echo "no new snapshot to commit"
             exit 0
           fi
-          git add data/raw
           git commit -m "data: daily disruption snapshot $(date -u +%Y-%m-%d)"
           git push
