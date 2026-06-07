@@ -1,0 +1,62 @@
+package forecast
+
+import "testing"
+
+func mkSeries(vals []float64, startYear, startMonth int) []Point {
+	pts := make([]Point, len(vals))
+	y, m := startYear, startMonth
+	for i, v := range vals {
+		pts[i] = Point{Year: y, Month: m, Value: v}
+		m++
+		if m > 12 {
+			m = 1
+			y++
+		}
+	}
+	return pts
+}
+
+func TestSeasonalPicksSameMonth(t *testing.T) {
+	// 24 months; same-month-prior-year values are distinctive.
+	hist := mkSeries([]float64{
+		10, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // year 1, Jan=10
+		20, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, // year 2, Jan=20
+	}, 2021, 1)
+	target := Point{Year: 2023, Month: 1} // predict a January
+	samples := Seasonal{FallbackK: 6}.Predict(hist, target)
+	if len(samples) != 2 || samples[0] != 10 || samples[1] != 20 {
+		t.Fatalf("seasonal samples = %v, want [10 20]", samples)
+	}
+}
+
+func TestSeasonalFallsBackWhenNoSameMonth(t *testing.T) {
+	hist := mkSeries([]float64{1, 2, 3}, 2021, 1) // Jan,Feb,Mar
+	target := Point{Year: 2021, Month: 7}         // July: no prior July
+	samples := Seasonal{FallbackK: 2}.Predict(hist, target)
+	if len(samples) != 2 || samples[0] != 2 || samples[1] != 3 {
+		t.Fatalf("fallback samples = %v, want last 2 [2 3]", samples)
+	}
+}
+
+func TestRecentWindowAbstainsOnEmpty(t *testing.T) {
+	if s := (RecentWindow{K: 6}).Predict(nil, Point{}); s != nil {
+		t.Errorf("expected abstain on empty history, got %v", s)
+	}
+}
+
+func TestBacktestRespectsMinHistoryAndNoLeakage(t *testing.T) {
+	// Strictly increasing series; with min history 3, points 3..N are scored.
+	series := map[string][]Point{
+		"A": mkSeries([]float64{1, 2, 3, 4, 5, 6}, 2021, 1),
+	}
+	res := Backtest(series, []Model{RecentWindow{K: 3}}, 3)
+	if len(res) != 1 {
+		t.Fatalf("want 1 model result")
+	}
+	if res[0].Scored != 3 { // indices 3,4,5
+		t.Errorf("scored = %d, want 3", res[0].Scored)
+	}
+	if res[0].MeanCRPS <= 0 {
+		t.Errorf("increasing series should yield positive CRPS, got %v", res[0].MeanCRPS)
+	}
+}

@@ -298,7 +298,15 @@ the fact that severity is not a clean ordinal:
    (`internal/burden`).
 6. ⏭ **Resolution criterion + burden weights** into `config/disruptions.yaml` +
    methodology README; validate the 14-day rule as churn data arrives.
-7. ⏭ **stochadex burden model**; backtest CRPS + log-score offline.
+7. ⏳ **Burden model + offline backtest.** ✅ Scoring + baseline harness
+   (`internal/scoring` CRPS/PIT, `internal/forecast` empirical baselines,
+   `cmd/backtest`): on the works-burden series, **`seasonal+recent` is the honest
+   floor** — mean CRPS ≈139 and best-calibrated, ~halving the point-forecast
+   baseline's CRPS. *Next within #7:* add the known permit **pipeline as a
+   covariate** (the planned term — where the forward signal pays off), then the
+   stochadex generative / network-propagation model — all scored by this same
+   harness. NB the backtest is against the Street-Manager works proxy; the live
+   scored target (TfL-feed burden) accrues from snapshots.
 8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
 9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
 10. ⏭ First published month: predictions only; honest "the calibration curve is
