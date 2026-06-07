@@ -10,3 +10,6 @@
 
 # Burden series is derived from Street Manager (external) data — regenerated, not committed
 /data/burden/
+
+# Transient sweep log
+/sweep.log
