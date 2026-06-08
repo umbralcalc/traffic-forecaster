@@ -67,6 +67,19 @@ func run(in, col, lastRealised string, minHistory int) error {
 		}
 		fmt.Printf("  %-18s %10.1f %9d %9.2f%s\n", r.Name, r.MeanCRPS, r.Scored, r.CalUnif, marker)
 	}
+	// Joint metric: London-wide TOTAL burden, where cross-borough coupling pays
+	// off. Compare the common-factor model against the best independent model.
+	fmt.Println("\nLondon-total burden CRPS (joint metric — coupling should beat independent):")
+	totals := []forecast.ModelResult{
+		forecast.BacktestJointTotal(series,
+			burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
+		forecast.BacktestJointTotal(series,
+			forecast.IndependentJoint{Model: forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, N: 200, Seed: 1}, minHistory),
+	}
+	for _, r := range totals {
+		fmt.Printf("  %-34s mean CRPS %9.1f   cal.unif %6.2f\n", r.Name, r.MeanCRPS, r.CalUnif)
+	}
+
 	fmt.Println("\nPIT histograms (10 bins, each ~0.10 if calibrated; U-shape=overconfident, ∩=underconfident, slope=biased):")
 	for _, r := range results {
 		if r.Scored == 0 {

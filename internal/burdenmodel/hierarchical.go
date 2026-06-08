@@ -116,6 +116,10 @@ func (m CommonFactorModel) PredictAll(
 	targets map[string]forecast.Point,
 ) map[string][]float64 {
 	out := make(map[string][]float64, len(targets))
+	n := m.N
+	if n <= 0 {
+		n = 100
+	}
 
 	// Per-borough residual (realised − pipeline) indexed by month, for boroughs
 	// with a usable target pipeline and enough pipelined history.
@@ -147,10 +151,6 @@ func (m CommonFactorModel) PredictAll(
 
 	if len(modeled) >= 3 && len(months) >= 4 {
 		pipeline, baseline, loading, sigma, commonSigma := calibrateCommonFactor(resid, modeled, months, targets)
-		n := m.N
-		if n <= 0 {
-			n = 100
-		}
 		seed := m.Seed + uint64(months[len(months)-1]+1)
 		runs := JointEnsemble(pipeline, baseline, loading, sigma, commonSigma, n, seed)
 		for i, b := range modeled {
@@ -163,12 +163,15 @@ func (m CommonFactorModel) PredictAll(
 	}
 
 	// Everything not modelled (no pipeline, thin history, or uncalibrated) falls
-	// back to the per-entity baseline.
+	// back to the per-entity baseline, resampled to N so all boroughs are aligned
+	// (the independent draw being correct for an uncoupled borough).
 	for b := range targets {
 		if _, done := out[b]; done {
 			continue
 		}
-		out[b] = forecast.SeasonalRecent{K: m.FallbackK}.Predict(histories[b], targets[b])
+		ens := forecast.SeasonalRecent{K: m.FallbackK}.Predict(histories[b], targets[b])
+		seed := m.Seed + forecast.HashSeed(b)
+		out[b] = forecast.Resample(ens, n, rand.New(rand.NewPCG(seed, seed)))
 	}
 	return out
 }
