@@ -55,6 +55,8 @@ func run(in, col, lastRealised string, minHistory int) error {
 	// Joint (cross-borough) models are scored together via BacktestJoint.
 	results = append(results, forecast.BacktestJoint(series,
 		burdenmodel.CommonFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
+	results = append(results, forecast.BacktestJoint(series,
+		burdenmodel.SpatialFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
 
 	fmt.Printf("\nexpanding-window backtest (min history %d months):\n", minHistory)
@@ -71,6 +73,8 @@ func run(in, col, lastRealised string, minHistory int) error {
 	// off. Compare the common-factor model against the best independent model.
 	fmt.Println("\nLondon-total burden CRPS (joint metric — coupling should beat independent):")
 	totals := []forecast.ModelResult{
+		forecast.BacktestJointTotal(series,
+			burdenmodel.SpatialFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
 		forecast.BacktestJointTotal(series,
 			burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
 		forecast.BacktestJointTotal(series,

@@ -42,11 +42,28 @@ func (h *HierarchicalEmergencyIteration) Iterate(
 ) []float64 {
 	n := stateHistories[partitionIndex].StateWidth
 	f := h.normal.Rand() * params.GetIndex("common_sigma", 0) // one shared draw
+	// Idiosyncratic innovations, drawn for every borough first.
+	eps := make([]float64, n)
+	for i := 0; i < n; i++ {
+		eps[i] = h.normal.Rand() * params.GetIndex("sigma", i)
+	}
+	// Optional spatial matrix M (flattened n*n): the neighbour coupling. When
+	// present the noise becomes s = M·eps (a spatial autoregressive spread);
+	// otherwise it stays independent (the common-factor-only model).
+	mFlat, hasSpatial := params.GetCopyOk("spatial_matrix")
+	hasSpatial = hasSpatial && len(mFlat) == n*n
+
 	out := make([]float64, n)
 	for i := 0; i < n; i++ {
-		eps := h.normal.Rand() * params.GetIndex("sigma", i)
+		s := eps[i]
+		if hasSpatial {
+			s = 0
+			for j := 0; j < n; j++ {
+				s += mFlat[i*n+j] * eps[j]
+			}
+		}
 		v := params.GetIndex("pipeline", i) + params.GetIndex("baseline", i) +
-			params.GetIndex("loading", i)*f + eps
+			params.GetIndex("loading", i)*f + s
 		if v < 0 {
 			v = 0
 		}
@@ -55,7 +72,7 @@ func (h *HierarchicalEmergencyIteration) Iterate(
 	return out
 }
 
-// JointEnsemble runs n independent one-month realisations of the hierarchical
+// JointEnsemble runs n independent one-month realisations of the common-factor
 // model and returns each realisation's per-borough burden vector. Boroughs in
 // the same realisation share the factor draw F, which induces the cross-borough
 // correlation the common factor represents.
@@ -63,21 +80,42 @@ func JointEnsemble(
 	pipeline, baseline, loading, sigma []float64,
 	commonSigma float64, n int, baseSeed uint64,
 ) [][]float64 {
+	return jointEnsemble(pipeline, baseline, loading, sigma, commonSigma, nil, n, baseSeed)
+}
+
+// JointEnsembleSpatial is JointEnsemble with a flattened n*n spatial matrix M
+// applied to the idiosyncratic noise (s = M·eps), adding the nearest-neighbour
+// coupling on top of the shared common factor.
+func JointEnsembleSpatial(
+	pipeline, baseline, loading, sigma []float64,
+	commonSigma float64, spatial []float64, n int, baseSeed uint64,
+) [][]float64 {
+	return jointEnsemble(pipeline, baseline, loading, sigma, commonSigma, spatial, n, baseSeed)
+}
+
+func jointEnsemble(
+	pipeline, baseline, loading, sigma []float64,
+	commonSigma float64, spatial []float64, n int, baseSeed uint64,
+) [][]float64 {
 	runs := make([][]float64, n)
 	width := len(pipeline)
 	for k := 0; k < n; k++ {
 		store := simulator.NewStateTimeStorage()
 		gen := simulator.NewConfigGenerator()
+		paramMap := map[string][]float64{
+			"pipeline":     pipeline,
+			"baseline":     baseline,
+			"loading":      loading,
+			"sigma":        sigma,
+			"common_sigma": {commonSigma},
+		}
+		if spatial != nil {
+			paramMap["spatial_matrix"] = spatial
+		}
 		gen.SetPartition(&simulator.PartitionConfig{
-			Name:      "emergency",
-			Iteration: &HierarchicalEmergencyIteration{},
-			Params: simulator.NewParams(map[string][]float64{
-				"pipeline":     pipeline,
-				"baseline":     baseline,
-				"loading":      loading,
-				"sigma":        sigma,
-				"common_sigma": {commonSigma},
-			}),
+			Name:              "emergency",
+			Iteration:         &HierarchicalEmergencyIteration{},
+			Params:            simulator.NewParams(paramMap),
 			InitStateValues:   make([]float64, width),
 			StateHistoryDepth: 1,
 			Seed:              baseSeed + uint64(k),
@@ -150,9 +188,13 @@ func (m CommonFactorModel) PredictAll(
 	}
 
 	if len(modeled) >= 3 && len(months) >= 4 {
-		pipeline, baseline, loading, sigma, commonSigma := calibrateCommonFactor(resid, modeled, months, targets)
+		d := decompose(resid, modeled, months, targets)
+		sigma := make([]float64, len(modeled))
+		for i := range d.e {
+			sigma[i] = math.Sqrt(pvariance(d.e[i]))
+		}
 		seed := m.Seed + uint64(months[len(months)-1]+1)
-		runs := JointEnsemble(pipeline, baseline, loading, sigma, commonSigma, n, seed)
+		runs := JointEnsemble(d.pipeline, d.baseline, d.loading, sigma, d.commonSigma, n, seed)
 		for i, b := range modeled {
 			col := make([]float64, len(runs))
 			for k := range runs {
@@ -176,57 +218,68 @@ func (m CommonFactorModel) PredictAll(
 	return out
 }
 
-// calibrateCommonFactor decomposes the residual matrix into a per-borough
-// baseline, a single common factor L(t) = cross-borough mean deviation, each
-// borough's loading on it, and the idiosyncratic spread. Returns parameter
-// vectors aligned to modeled, with pipeline taken from the target month.
-func calibrateCommonFactor(
+// factorDecomp is the common-factor decomposition of the residual matrix.
+type factorDecomp struct {
+	pipeline    []float64   // target-month pipeline per modeled borough
+	baseline    []float64   // mean residual per borough
+	loading     []float64   // loading on the common factor per borough
+	commonSigma float64     // std of the common factor L(t)
+	common      []float64   // the common factor series
+	e           [][]float64 // idiosyncratic residual per borough over months
+}
+
+// decompose splits the residual matrix into a per-borough baseline, a single
+// common factor L(t) = cross-borough mean deviation, each borough's loading on
+// it, and the idiosyncratic residual e (used for the spatial layer's spread).
+func decompose(
 	resid map[string]map[int]float64,
 	modeled []string,
 	months []int,
 	targets map[string]forecast.Point,
-) (pipeline, baseline, loading, sigma []float64, commonSigma float64) {
-	demeaned := make(map[string][]float64, len(modeled))
-	baseline = make([]float64, len(modeled))
-	pipeline = make([]float64, len(modeled))
-	for bi, b := range modeled {
+) factorDecomp {
+	n := len(modeled)
+	d := factorDecomp{
+		pipeline: make([]float64, n),
+		baseline: make([]float64, n),
+		loading:  make([]float64, n),
+		e:        make([][]float64, n),
+	}
+	demeaned := make([][]float64, n)
+	for i, b := range modeled {
 		xs := make([]float64, len(months))
 		for j, t := range months {
 			xs[j] = resid[b][t]
 		}
 		mu := mean(xs)
-		baseline[bi] = mu
-		pipeline[bi] = targets[b].Pipeline
-		d := make([]float64, len(months))
+		d.baseline[i] = mu
+		d.pipeline[i] = targets[b].Pipeline
+		dd := make([]float64, len(months))
 		for j := range xs {
-			d[j] = xs[j] - mu
+			dd[j] = xs[j] - mu
 		}
-		demeaned[b] = d
+		demeaned[i] = dd
 	}
-	// Common factor = mean demeaned residual across boroughs each month.
-	common := make([]float64, len(months))
+	d.common = make([]float64, len(months))
 	for j := range months {
 		var s float64
-		for _, b := range modeled {
-			s += demeaned[b][j]
+		for i := 0; i < n; i++ {
+			s += demeaned[i][j]
 		}
-		common[j] = s / float64(len(modeled))
+		d.common[j] = s / float64(n)
 	}
-	varCommon := pvariance(common)
-	commonSigma = math.Sqrt(varCommon)
-	loading = make([]float64, len(modeled))
-	sigma = make([]float64, len(modeled))
-	for bi, b := range modeled {
+	varCommon := pvariance(d.common)
+	d.commonSigma = math.Sqrt(varCommon)
+	for i := 0; i < n; i++ {
 		if varCommon > 0 {
-			loading[bi] = covariance(demeaned[b], common) / varCommon
+			d.loading[i] = covariance(demeaned[i], d.common) / varCommon
 		}
 		e := make([]float64, len(months))
-		for j := range common {
-			e[j] = demeaned[b][j] - loading[bi]*common[j]
+		for j := range d.common {
+			e[j] = demeaned[i][j] - d.loading[i]*d.common[j]
 		}
-		sigma[bi] = math.Sqrt(pvariance(e))
+		d.e[i] = e
 	}
-	return pipeline, baseline, loading, sigma, commonSigma
+	return d
 }
 
 func alignedMonths(resid map[string]map[int]float64, modeled []string) []int {
