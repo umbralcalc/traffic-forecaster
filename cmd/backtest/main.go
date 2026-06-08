@@ -52,6 +52,9 @@ func run(in, col, lastRealised string, minHistory int) error {
 		burdenmodel.StochadexBurden{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1},
 	}
 	results := forecast.Backtest(series, models, minHistory)
+	// Joint (cross-borough) models are scored together via BacktestJoint.
+	results = append(results, forecast.BacktestJoint(series,
+		burdenmodel.CommonFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
 
 	fmt.Printf("\nexpanding-window backtest (min history %d months):\n", minHistory)
