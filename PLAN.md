@@ -311,10 +311,16 @@ the fact that severity is not a clean ordinal:
    model `pipeline+res(18m)` reaches **CRPS 72.1, calibration 15.5** (≈48% below
    the baseline floor, near the best-calibrated model). Multiplicative variants
    (ratio/decomp) tried and rejected — the pipeline is biased low, so multiplying
-   amplifies. *Next within #7:* the stochadex generative / network-propagation
-   model — scored by this same harness. NB the backtest is against the
-   Street-Manager works proxy; the live scored target (TfL-feed burden) accrues
-   from snapshots.
+   amplifies. ✅ **stochadex integration** (`internal/burdenmodel`): the real
+   framework, composing burden = planned (reused `ParamValuesIteration`) +
+   emergency (custom `CompoundPoissonShockIteration` — a full monthly Poisson
+   count) summed by a reused `ValuesFunctionIteration`, run as a seed-varied
+   ensemble; emergency calibrated to trailing residual moments. Competitive with
+   the empirical floor (**CRPS 74.2 vs 72.1**), comparable calibration; custom
+   iteration unit-tested and run through `simulator.RunWithHarnesses`. *Next
+   within #7:* network propagation (burden as a scalar field on the road graph) —
+   the bigger build, same harness. NB the backtest is against the Street-Manager
+   works proxy; the live scored target (TfL-feed burden) accrues from snapshots.
 8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
 9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
 10. ⏭ First published month: predictions only; honest "the calibration curve is

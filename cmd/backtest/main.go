@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/umbralcalc/traffic-forecaster/internal/burdenmodel"
 	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
 )
 
@@ -48,6 +49,7 @@ func run(in, col, lastRealised string, minHistory int) error {
 		forecast.PipelineResidual{FallbackK: 12, ResidualK: 0},  // all-history (biased by trend)
 		forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, // trailing window (trend-aware)
 		forecast.PipelineRatio{FallbackK: 12},
+		burdenmodel.StochadexBurden{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1},
 	}
 	results := forecast.Backtest(series, models, minHistory)
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
