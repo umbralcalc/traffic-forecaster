@@ -5,8 +5,10 @@ name: daily-snapshot
 # forward — a missed day is unrecoverable.
 on:
   schedule:
-    # 06:00 UTC daily. Disruptions evolve slowly; one pull a day is enough.
-    - cron: "0 6 * * *"
+    # 06:23 UTC daily. Disruptions evolve slowly; one pull a day is enough.
+    # Deliberately off the top of the hour: GitHub heavily delays/drops
+    # scheduled runs at :00 of popular hours.
+    - cron: "23 6 * * *"
   workflow_dispatch: {}
 
 permissions:
