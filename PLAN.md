@@ -317,10 +317,17 @@ the fact that severity is not a clean ordinal:
    count) summed by a reused `ValuesFunctionIteration`, run as a seed-varied
    ensemble; emergency calibrated to trailing residual moments. Competitive with
    the empirical floor (**CRPS 74.2 vs 72.1**), comparable calibration; custom
-   iteration unit-tested and run through `simulator.RunWithHarnesses`. *Next
-   within #7:* network propagation (burden as a scalar field on the road graph) —
-   the bigger build, same harness. NB the backtest is against the Street-Manager
-   works proxy; the live scored target (TfL-feed burden) accrues from snapshots.
+   iteration unit-tested and run through `simulator.RunWithHarnesses`. ✅
+   **Hierarchical propagation** (`forecast.JointModel`/`BacktestJoint(Total)`;
+   `burdenmodel.CommonFactorModel` + `SpatialFactorModel`): a shared London
+   common factor couples all boroughs, with a nearest-neighbour spatial
+   autoregression (`M=(I−spill·W)⁻¹`, adjacency from works-coordinate centroids)
+   layered on top. Scored properly on the **London-total** burden (where coupling
+   pays off): the common factor is well-calibrated (2.9 vs 11.4 for independent)
+   and ~5% better CRPS; the nearest-neighbour layer adds ~nothing on top (the
+   cross-borough structure is common-mode, confirmed by a pre-build signal check).
+   **#7 done.** NB the backtest is against the Street-Manager works proxy; the
+   live scored target (TfL-feed burden) accrues from snapshots.
 8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
 9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
 10. ⏭ First published month: predictions only; honest "the calibration curve is
