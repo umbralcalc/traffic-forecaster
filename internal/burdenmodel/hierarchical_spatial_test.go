@@ -26,7 +26,7 @@ func TestAdjacencyIsSymmetric(t *testing.T) {
 
 func TestWeightMatrixRowsNormalised(t *testing.T) {
 	modeled := []string{"Camden", "Westminster", "Islington", "City of London"}
-	w := weightMatrix(modeled)
+	w := weightMatrix(modeled, boroughAdjacency)
 	n := len(modeled)
 	for i := 0; i < n; i++ {
 		var sum float64
@@ -62,6 +62,33 @@ func buildHierSpatial(store *simulator.StateTimeStorage) (*simulator.Settings, *
 		InitTimeValue:        0.0,
 	})
 	return gen.GenerateConfigs()
+}
+
+func TestGridAdjacency(t *testing.T) {
+	// A 2x2 block of cells plus one detached cell.
+	cells := []string{"10_10", "11_10", "10_11", "11_11", "20_20"}
+	adj := GridAdjacency(cells)
+	// Corner cell touches its three block-mates (diagonal included).
+	if got := len(adj["10_10"]); got != 3 {
+		t.Errorf("10_10 neighbours = %d (%v), want 3", got, adj["10_10"])
+	}
+	if len(adj["20_20"]) != 0 {
+		t.Errorf("detached cell should have no neighbours, got %v", adj["20_20"])
+	}
+	// Symmetry.
+	for a, nbrs := range adj {
+		for _, b := range nbrs {
+			found := false
+			for _, x := range adj[b] {
+				if x == a {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("grid adjacency not symmetric: %s-%s", a, b)
+			}
+		}
+	}
 }
 
 func TestHierSpatialRunsWithHarnesses(t *testing.T) {

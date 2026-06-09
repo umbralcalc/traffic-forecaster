@@ -1,6 +1,7 @@
 package burdenmodel
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"sort"
@@ -19,6 +20,16 @@ type SpatialFactorModel struct {
 	N         int
 	FallbackK int
 	Seed      uint64
+	// Adjacency maps each entity to its neighbours. Defaults to the borough graph
+	// when nil; pass a grid adjacency (see GridAdjacency) for cell-level series.
+	Adjacency map[string][]string
+}
+
+func (m SpatialFactorModel) adjacency() map[string][]string {
+	if m.Adjacency != nil {
+		return m.Adjacency
+	}
+	return boroughAdjacency
 }
 
 func (SpatialFactorModel) Name() string { return "hier-spatial" }
@@ -59,7 +70,7 @@ func (m SpatialFactorModel) PredictAll(
 
 	if len(modeled) >= 3 && len(months) >= 4 {
 		d := decompose(resid, modeled, months, targets)
-		w := weightMatrix(modeled)
+		w := weightMatrix(modeled, m.adjacency())
 		spill := estimateSpill(w, d.e, len(modeled), len(months))
 		mFlat, sigma, ok := spatialSpread(w, d.e, spill, len(modeled), len(months))
 		seed := m.Seed + uint64(months[len(months)-1]+1)
@@ -97,7 +108,7 @@ func (m SpatialFactorModel) PredictAll(
 // weightMatrix builds the row-normalised adjacency weight matrix (flattened n*n)
 // over the modeled boroughs: W[i,j] = 1/deg(i) if j is a neighbour of i present
 // in the set, else 0. Boroughs with no present neighbours get a zero row.
-func weightMatrix(modeled []string) []float64 {
+func weightMatrix(modeled []string, adjacency map[string][]string) []float64 {
 	idx := make(map[string]int, len(modeled))
 	for i, b := range modeled {
 		idx[b] = i
@@ -106,7 +117,7 @@ func weightMatrix(modeled []string) []float64 {
 	w := make([]float64, n*n)
 	for i, b := range modeled {
 		var nbrs []int
-		for _, a := range boroughAdjacency[b] {
+		for _, a := range adjacency[b] {
 			if j, ok := idx[a]; ok {
 				nbrs = append(nbrs, j)
 			}
@@ -120,6 +131,39 @@ func weightMatrix(modeled []string) []float64 {
 		}
 	}
 	return w
+}
+
+// GridAdjacency builds an 8-neighbour adjacency map over grid cells (ids "i_j"
+// as produced by burden.CellID): two cells are neighbours when their indices
+// differ by at most one in each axis. Only cells in the input set are linked.
+func GridAdjacency(cells []string) map[string][]string {
+	type ij struct{ i, j int }
+	coord := make(map[string]ij, len(cells))
+	present := make(map[ij]string, len(cells))
+	for _, c := range cells {
+		var i, j int
+		if _, err := fmt.Sscanf(c, "%d_%d", &i, &j); err != nil {
+			continue
+		}
+		coord[c] = ij{i, j}
+		present[ij{i, j}] = c
+	}
+	adj := make(map[string][]string, len(cells))
+	for c, p := range coord {
+		var nbrs []string
+		for di := -1; di <= 1; di++ {
+			for dj := -1; dj <= 1; dj++ {
+				if di == 0 && dj == 0 {
+					continue
+				}
+				if n, ok := present[ij{p.i + di, p.j + dj}]; ok {
+					nbrs = append(nbrs, n)
+				}
+			}
+		}
+		adj[c] = nbrs
+	}
+	return adj
 }
 
 // estimateSpill fits the spatial autoregression coefficient by a pooled

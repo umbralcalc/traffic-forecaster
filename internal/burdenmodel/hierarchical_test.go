@@ -79,6 +79,39 @@ func TestJointEnsembleSharedFactorCorrelates(t *testing.T) {
 	}
 }
 
+func meanCol(runs [][]float64, c int) float64 {
+	var s float64
+	for _, r := range runs {
+		s += r[c]
+	}
+	return s / float64(len(runs))
+}
+
+func TestDirectEnsembleMatchesStochadex(t *testing.T) {
+	// width 4 (<= directThreshold) goes through the stochadex simulator; the
+	// direct sampler must reproduce the same per-dimension means.
+	pipeline := []float64{5, 8, 3, 6}
+	baseline := []float64{1, 2, 1, 2}
+	loading := []float64{1, 0.5, 1.2, 0.8}
+	sigma := []float64{0.5, 0.3, 0.4, 0.6}
+	st := JointEnsemble(pipeline, baseline, loading, sigma, 1.0, 5000, 1)
+	di := jointEnsembleDirect(pipeline, baseline, loading, sigma, 1.0, nil, 5000, 1)
+	for i := range pipeline {
+		if d := math.Abs(meanCol(st, i) - meanCol(di, i)); d > 0.3 {
+			t.Errorf("dim %d: stochadex vs direct mean differ by %.3f", i, d)
+		}
+	}
+}
+
+func TestDirectEnsembleZeroNoise(t *testing.T) {
+	runs := jointEnsembleDirect([]float64{5, 10}, []float64{1, 2}, []float64{0, 0}, []float64{0, 0}, 0, nil, 8, 1)
+	for _, r := range runs {
+		if r[0] != 6 || r[1] != 12 {
+			t.Fatalf("noiseless direct = %v, want [6 12]", r)
+		}
+	}
+}
+
 func TestCommonFactorModelShapeAndFallback(t *testing.T) {
 	m := CommonFactorModel{ResidualK: 18, N: 32, FallbackK: 6, Seed: 1}
 	histories := map[string][]forecast.Point{}

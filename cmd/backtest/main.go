@@ -23,23 +23,39 @@ import (
 func main() {
 	in := flag.String("in", filepath.Join("data", "burden", "works-burden.csv"), "burden series CSV")
 	col := flag.String("col", "weighted_days", "burden column to forecast")
+	entity := flag.String("entity", "borough", "entity column (borough or cell)")
+	cellKm := flag.Float64("cell-km", 0, "if >0, treat entities as grid cells and use grid adjacency")
+	maxEntities := flag.Int("max-entities", 0, "keep only the N busiest entities (0 = all)")
 	lastRealised := flag.String("last-realised", "2026-05", "last fully-realised month, YYYY-MM (forward tail excluded)")
 	minHistory := flag.Int("min-history", 13, "months of history required before scoring a point")
 	flag.Parse()
 
-	if err := run(*in, *col, *lastRealised, *minHistory); err != nil {
+	if err := run(*in, *col, *entity, *cellKm, *maxEntities, *lastRealised, *minHistory); err != nil {
 		fmt.Fprintln(os.Stderr, "backtest:", err)
 		os.Exit(1)
 	}
 }
 
-func run(in, col, lastRealised string, minHistory int) error {
-	series, entities, months, err := loadSeries(in, col, lastRealised)
+func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised string, minHistory int) error {
+	series, entities, months, err := loadSeries(in, col, entity, lastRealised, maxEntities)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("series: %d entities, %d realised months (<= %s), forecasting %q\n",
-		entities, months, lastRealised, col)
+	fmt.Printf("series: %d entities (%s), %d realised months (<= %s), forecasting %q\n",
+		entities, entity, months, lastRealised, col)
+
+	// Spatial adjacency: grid neighbours for cells, the borough graph otherwise.
+	var adjacency map[string][]string
+	if cellKm > 0 {
+		keys := make([]string, 0, len(series))
+		for k := range series {
+			keys = append(keys, k)
+		}
+		adjacency = burdenmodel.GridAdjacency(keys)
+	}
+	spatial := func(n int) burdenmodel.SpatialFactorModel {
+		return burdenmodel.SpatialFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, Adjacency: adjacency}
+	}
 
 	models := []forecast.Model{
 		forecast.ClimatologyMean{},
@@ -55,8 +71,7 @@ func run(in, col, lastRealised string, minHistory int) error {
 	// Joint (cross-borough) models are scored together via BacktestJoint.
 	results = append(results, forecast.BacktestJoint(series,
 		burdenmodel.CommonFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
-	results = append(results, forecast.BacktestJoint(series,
-		burdenmodel.SpatialFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
+	results = append(results, forecast.BacktestJoint(series, spatial(100), minHistory))
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
 
 	fmt.Printf("\nexpanding-window backtest (min history %d months):\n", minHistory)
@@ -73,8 +88,7 @@ func run(in, col, lastRealised string, minHistory int) error {
 	// off. Compare the common-factor model against the best independent model.
 	fmt.Println("\nLondon-total burden CRPS (joint metric — coupling should beat independent):")
 	totals := []forecast.ModelResult{
-		forecast.BacktestJointTotal(series,
-			burdenmodel.SpatialFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
+		forecast.BacktestJointTotal(series, spatial(200), minHistory),
 		forecast.BacktestJointTotal(series,
 			burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
 		forecast.BacktestJointTotal(series,
@@ -100,7 +114,7 @@ func run(in, col, lastRealised string, minHistory int) error {
 	return nil
 }
 
-func loadSeries(path, col, lastRealised string) (map[string][]forecast.Point, int, int, error) {
+func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map[string][]forecast.Point, int, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("%w (run cmd/build-burden first)", err)
@@ -116,7 +130,7 @@ func loadSeries(path, col, lastRealised string) (map[string][]forecast.Point, in
 	for i, h := range header {
 		idx[h] = i
 	}
-	for _, need := range []string{"month", "borough", col} {
+	for _, need := range []string{"month", entityCol, col} {
 		if _, ok := idx[need]; !ok {
 			return nil, 0, 0, fmt.Errorf("CSV missing column %q", need)
 		}
@@ -141,14 +155,37 @@ func loadSeries(path, col, lastRealised string) (map[string][]forecast.Point, in
 		if err != nil {
 			continue
 		}
-		borough := rec[idx["borough"]]
-		series[borough] = append(series[borough], forecast.Point{
+		ent := rec[idx[entityCol]]
+		series[ent] = append(series[ent], forecast.Point{
 			Year: y, Month: m, Value: v,
 			Pipeline:  optFloat(rec, idx, "pipeline_weighted_days"),
 			Planned:   optFloat(rec, idx, "planned_days"),
 			Emergency: optFloat(rec, idx, "emergency_days"),
 		})
 		monthSet[month] = true
+	}
+
+	// Optionally keep only the busiest entities (by total burden) — useful to
+	// bound cost on the dense, forecastable subset of a sparse grid.
+	if maxEntities > 0 && len(series) > maxEntities {
+		type tot struct {
+			ent string
+			sum float64
+		}
+		tots := make([]tot, 0, len(series))
+		for ent, pts := range series {
+			var s float64
+			for _, p := range pts {
+				s += p.Value
+			}
+			tots = append(tots, tot{ent, s})
+		}
+		sort.Slice(tots, func(i, j int) bool { return tots[i].sum > tots[j].sum })
+		kept := map[string][]forecast.Point{}
+		for _, t := range tots[:maxEntities] {
+			kept[t.ent] = series[t.ent]
+		}
+		series = kept
 	}
 	return series, len(series), len(monthSet), nil
 }

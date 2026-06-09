@@ -93,12 +93,21 @@ func JointEnsembleSpatial(
 	return jointEnsemble(pipeline, baseline, loading, sigma, commonSigma, spatial, n, baseSeed)
 }
 
+// directThreshold is the entity count above which the ensemble is sampled
+// directly (the stochadex one-step simulation per realisation is pure overhead
+// at large widths, and copies the n*n spatial matrix each run). Below it the
+// stochadex simulator runs, exercising the harness-tested iteration.
+const directThreshold = 64
+
 func jointEnsemble(
 	pipeline, baseline, loading, sigma []float64,
 	commonSigma float64, spatial []float64, n int, baseSeed uint64,
 ) [][]float64 {
-	runs := make([][]float64, n)
 	width := len(pipeline)
+	if width > directThreshold {
+		return jointEnsembleDirect(pipeline, baseline, loading, sigma, commonSigma, spatial, n, baseSeed)
+	}
+	runs := make([][]float64, n)
 	for k := 0; k < n; k++ {
 		store := simulator.NewStateTimeStorage()
 		gen := simulator.NewConfigGenerator()
@@ -131,6 +140,47 @@ func jointEnsemble(
 		simulator.NewPartitionCoordinator(settings, impls).Run()
 		series := store.GetValues("emergency")
 		runs[k] = series[len(series)-1]
+	}
+	return runs
+}
+
+// jointEnsembleDirect samples the hierarchical model directly (no simulator),
+// computing the exact same quantity as HierarchicalEmergencyIteration:
+//
+//	burden_i = max(0, pipeline_i + baseline_i + loading_i*F + (M·eps)_i),
+//	F ~ N(0, commonSigma),  eps_i ~ N(0, sigma_i).
+//
+// This is the scalable path for large entity sets (e.g. grid cells), where
+// running a fresh simulation per realisation and copying the n*n matrix is
+// prohibitively slow.
+func jointEnsembleDirect(
+	pipeline, baseline, loading, sigma []float64,
+	commonSigma float64, spatial []float64, n int, baseSeed uint64,
+) [][]float64 {
+	width := len(pipeline)
+	rng := rand.New(rand.NewPCG(baseSeed, baseSeed^0x9e3779b97f4a7c15))
+	runs := make([][]float64, n)
+	eps := make([]float64, width)
+	for k := 0; k < n; k++ {
+		f := rng.NormFloat64() * commonSigma
+		for i := 0; i < width; i++ {
+			eps[i] = rng.NormFloat64() * sigma[i]
+		}
+		row := make([]float64, width)
+		for i := 0; i < width; i++ {
+			s := eps[i]
+			if spatial != nil {
+				s = 0
+				base := i * width
+				for j := 0; j < width; j++ {
+					s += spatial[base+j] * eps[j]
+				}
+			}
+			if v := pipeline[i] + baseline[i] + loading[i]*f + s; v > 0 {
+				row[i] = v
+			}
+		}
+		runs[k] = row
 	}
 	return runs
 }
