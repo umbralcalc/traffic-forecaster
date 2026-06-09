@@ -165,6 +165,31 @@ func TestCellSeriesAttributesByCoordinate(t *testing.T) {
 	}
 }
 
+func TestHybridSeriesAdaptiveResolution(t *testing.T) {
+	ws := Works{}
+	ws.Apply(recGeo("2026-06-02T00:00:00Z", "W1", "POINT(523431 182057)")) // cell 261_91
+	ws.Apply(recGeo("2026-06-02T00:00:00Z", "W2", "POINT(530000 182057)")) // cell 265_91
+	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+
+	// Only 261_91 is dense -> it stays a fine cell; the other folds into its
+	// borough's rest unit (recGeo sets borough Southwark).
+	dense := map[string]bool{"261_91": true}
+	keys := map[string]bool{}
+	for _, r := range ws.HybridSeries(2000, dense, from, to) {
+		keys[r.Key] = true
+	}
+	if !keys["261_91"] {
+		t.Errorf("dense cell 261_91 missing; got %v", keys)
+	}
+	if !keys["Southwark"+RestSuffix] {
+		t.Errorf("sparse work should fold into borough rest unit; got %v", keys)
+	}
+	if keys["265_91"] {
+		t.Error("non-dense cell should not be its own unit")
+	}
+}
+
 func TestWorksLatestWinsAndSeries(t *testing.T) {
 	ws := Works{}
 	// Older event: planned only.

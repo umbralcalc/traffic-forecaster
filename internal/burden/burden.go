@@ -254,6 +254,49 @@ func cellKeyFunc(cellM float64) keyFunc {
 	}
 }
 
+// RestSuffix marks an adaptive-resolution "rest of borough" unit (the sparse
+// cells of a borough pooled together). Cell ids are "i_j" (digits), so this
+// never collides with a real cell key.
+const RestSuffix = " ·rest"
+
+// CellTotals sums realised weighted work-days per grid cell, for ranking cells
+// by activity when choosing the dense (fine-resolution) set.
+func (ws Works) CellTotals(cellM float64, from, to time.Time) map[string]float64 {
+	tot := map[string]float64{}
+	for _, r := range ws.CellSeries(cellM, from, to) {
+		tot[r.Key] += r.WeightedDays
+	}
+	return tot
+}
+
+// hybridKeyFunc keys a work by its grid cell when that cell is in the dense set,
+// otherwise by its borough's pooled "rest" unit — adaptive spatial resolution:
+// fine where activity warrants it, coarse where it is sparse.
+func hybridKeyFunc(cellM float64, dense map[string]bool) keyFunc {
+	return func(w *Work) (string, bool) {
+		if w.Located {
+			if cid := CellID(w.Easting, w.Northing, cellM); dense[cid] {
+				return cid, true
+			}
+		}
+		if w.Borough != "" {
+			return w.Borough + RestSuffix, true
+		}
+		return "", false
+	}
+}
+
+// HybridSeries and HybridPipelineSeries are the adaptive-resolution analogues of
+// CellSeries: dense cells stay as fine cells, all other works fold into their
+// borough's "rest" unit.
+func (ws Works) HybridSeries(cellM float64, dense map[string]bool, from, to time.Time) []Row {
+	return ws.seriesBy(hybridKeyFunc(cellM, dense), realisedWindow, false, from, to)
+}
+
+func (ws Works) HybridPipelineSeries(cellM float64, dense map[string]bool, from, to time.Time) []Row {
+	return ws.seriesBy(hybridKeyFunc(cellM, dense), plannedWindow, true, from, to)
+}
+
 // CellID is the grid cell id "i_j" containing a BNG coordinate at the given cell
 // size; CellCentroid inverts it to the cell centre (metres).
 func CellID(easting, northing, cellM float64) string {
