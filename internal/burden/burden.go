@@ -269,6 +269,35 @@ func (ws Works) CellTotals(cellM float64, from, to time.Time) map[string]float64
 	return tot
 }
 
+// CellBoroughs returns each grid cell's modal borough (the borough most of its
+// located works fall in), used to group hybrid fine cells under a borough for
+// the nested model. Boundary cells are assigned to their dominant borough (a
+// known approximation — a 2km cell can straddle a border).
+func (ws Works) CellBoroughs(cellM float64) map[string]string {
+	counts := map[string]map[string]int{}
+	for _, w := range ws {
+		if !w.Located || w.Borough == "" {
+			continue
+		}
+		cid := CellID(w.Easting, w.Northing, cellM)
+		if counts[cid] == nil {
+			counts[cid] = map[string]int{}
+		}
+		counts[cid][w.Borough]++
+	}
+	out := make(map[string]string, len(counts))
+	for cid, m := range counts {
+		best, bestN := "", -1
+		for b, n := range m {
+			if n > bestN || (n == bestN && b < best) {
+				best, bestN = b, n
+			}
+		}
+		out[cid] = best
+	}
+	return out
+}
+
 // hybridKeyFunc keys a work by its grid cell when that cell is in the dense set,
 // otherwise by its borough's pooled "rest" unit — adaptive spatial resolution:
 // fine where activity warrants it, coarse where it is sparse.

@@ -38,7 +38,7 @@ func main() {
 }
 
 func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised string, minHistory int) error {
-	series, entities, months, err := loadSeries(in, col, entity, lastRealised, maxEntities)
+	series, group, entities, months, err := loadSeries(in, col, entity, lastRealised, maxEntities)
 	if err != nil {
 		return err
 	}
@@ -87,6 +87,13 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 	lap("joint common (marginal)")
 	results = append(results, forecast.BacktestJoint(series, spatial(100), minHistory))
 	lap("joint spatial (marginal)")
+	nested := func(n int) burdenmodel.NestedFactorModel {
+		return burdenmodel.NestedFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, Group: group, Adjacency: adjacency}
+	}
+	if len(group) > 0 {
+		results = append(results, forecast.BacktestJoint(series, nested(100), minHistory))
+		lap("joint nested (marginal)")
+	}
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
 
 	fmt.Printf("\nexpanding-window backtest (min history %d months):\n", minHistory)
@@ -111,6 +118,10 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 		forecast.IndependentJoint{Model: forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, N: 200, Seed: 1}, minHistory)
 	lap("total independent")
 	totals := []forecast.ModelResult{totSpatial, totCommon, totIndep}
+	if len(group) > 0 {
+		totals = append(totals, forecast.BacktestJointTotal(series, nested(200), minHistory))
+		lap("total nested")
+	}
 	for _, r := range totals {
 		fmt.Printf("  %-34s mean CRPS %9.1f   cal.unif %6.2f\n", r.Name, r.MeanCRPS, r.CalUnif)
 	}
@@ -131,17 +142,17 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 	return nil
 }
 
-func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map[string][]forecast.Point, int, int, error) {
+func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map[string][]forecast.Point, map[string]string, int, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("%w (run cmd/build-burden first)", err)
+		return nil, nil, 0, 0, fmt.Errorf("%w (run cmd/build-burden first)", err)
 	}
 	defer f.Close()
 
 	r := csv.NewReader(f)
 	header, err := r.Read()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, nil, 0, 0, err
 	}
 	idx := map[string]int{}
 	for i, h := range header {
@@ -149,11 +160,13 @@ func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map
 	}
 	for _, need := range []string{"month", entityCol, col} {
 		if _, ok := idx[need]; !ok {
-			return nil, 0, 0, fmt.Errorf("CSV missing column %q", need)
+			return nil, nil, 0, 0, fmt.Errorf("CSV missing column %q", need)
 		}
 	}
+	boroughCol, hasBorough := idx["borough"]
 
 	series := map[string][]forecast.Point{}
+	group := map[string]string{} // unit -> borough (from optional column)
 	monthSet := map[string]bool{}
 	for {
 		rec, err := r.Read()
@@ -173,6 +186,9 @@ func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map
 			continue
 		}
 		ent := rec[idx[entityCol]]
+		if hasBorough && boroughCol < len(rec) {
+			group[ent] = rec[boroughCol]
+		}
 		series[ent] = append(series[ent], forecast.Point{
 			Year: y, Month: m, Value: v,
 			Pipeline:  optFloat(rec, idx, "pipeline_weighted_days"),
@@ -204,7 +220,7 @@ func loadSeries(path, col, entityCol, lastRealised string, maxEntities int) (map
 		}
 		series = kept
 	}
-	return series, len(series), len(monthSet), nil
+	return series, group, len(series), len(monthSet), nil
 }
 
 // optFloat reads a named column if present, returning 0 when absent or blank.

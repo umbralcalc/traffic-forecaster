@@ -25,24 +25,33 @@ import (
 
 func main() {
 	inDir := flag.String("in", filepath.Join("data", "streetmanager"), "directory of *.london.ndjson.gz extracts")
-	out := flag.String("out", filepath.Join("data", "burden", "hybrid-burden.csv"), "output CSV path")
+	outDir := flag.String("out-dir", filepath.Join("data", "burden"), "output directory (writes hybrid-n{N}.csv per N)")
 	cellKm := flag.Float64("cell-km", 2.0, "grid cell size in kilometres")
-	denseTopN := flag.Int("dense-top-n", 150, "keep the N busiest cells as fine cells; the rest fold into borough units")
+	denseTopN := flag.String("dense-top-n", "150", "comma-separated N values: keep the N busiest cells as fine cells")
 	from := flag.String("from", "2020-01", "first month, YYYY-MM")
 	to := flag.String("to", "2027-12", "last month, YYYY-MM")
 	rankTo := flag.String("rank-to", "2026-05", "rank cell activity over months up to here (exclude forward tail)")
 	flag.Parse()
 
-	if err := run(*inDir, *out, *cellKm*1000, *denseTopN, *from, *to, *rankTo); err != nil {
+	if err := run(*inDir, *outDir, *cellKm*1000, *denseTopN, *from, *to, *rankTo); err != nil {
 		fmt.Fprintln(os.Stderr, "build-hybrid-burden:", err)
 		os.Exit(1)
 	}
 }
 
-func run(inDir, out string, cellM float64, denseTopN int, from, to, rankTo string) error {
+func run(inDir, outDir string, cellM float64, denseTopNs, from, to, rankTo string) error {
 	fromT, _ := monthTime(from, false)
 	toT, _ := monthTime(to, true)
 	rankToT, _ := monthTime(rankTo, true)
+
+	var ns []int
+	for _, s := range strings.Split(denseTopNs, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("bad dense-top-n %q", s)
+		}
+		ns = append(ns, n)
+	}
 
 	paths, err := filepath.Glob(filepath.Join(inDir, "*.london.ndjson.gz"))
 	if err != nil || len(paths) == 0 {
@@ -56,7 +65,15 @@ func run(inDir, out string, cellM float64, denseTopN int, from, to, rankTo strin
 		}
 	}
 
-	// Rank cells by realised activity; the busiest denseTopN stay fine.
+	cellBorough := ws.CellBoroughs(cellM)
+	unitBorough := func(unit string) string {
+		if strings.HasSuffix(unit, burden.RestSuffix) {
+			return strings.TrimSuffix(unit, burden.RestSuffix)
+		}
+		return cellBorough[unit]
+	}
+
+	// Rank cells by realised activity once; reuse across N variants.
 	totals := ws.CellTotals(cellM, fromT, rankToT)
 	type ct struct {
 		cell string
@@ -67,34 +84,34 @@ func run(inDir, out string, cellM float64, denseTopN int, from, to, rankTo strin
 		cts = append(cts, ct{c, w})
 	}
 	sort.Slice(cts, func(i, j int) bool { return cts[i].w > cts[j].w })
-	dense := map[string]bool{}
-	for i := 0; i < denseTopN && i < len(cts); i++ {
-		dense[cts[i].cell] = true
-	}
 
-	rows := ws.HybridSeries(cellM, dense, fromT, toT)
-	pipeline := map[string]float64{}
-	for _, p := range ws.HybridPipelineSeries(cellM, dense, fromT, toT) {
-		pipeline[p.Month+"|"+p.Key] = p.WeightedDays
-	}
-	if err := writeCSV(out, rows, pipeline); err != nil {
-		return err
-	}
-
-	units := map[string]bool{}
-	var fineUnits, restUnits int
-	for _, r := range rows {
-		if !units[r.Key] {
-			units[r.Key] = true
-			if strings.HasSuffix(r.Key, burden.RestSuffix) {
-				restUnits++
-			} else {
-				fineUnits++
+	for _, denseTopN := range ns {
+		dense := map[string]bool{}
+		for i := 0; i < denseTopN && i < len(cts); i++ {
+			dense[cts[i].cell] = true
+		}
+		rows := ws.HybridSeries(cellM, dense, fromT, toT)
+		pipeline := map[string]float64{}
+		for _, p := range ws.HybridPipelineSeries(cellM, dense, fromT, toT) {
+			pipeline[p.Month+"|"+p.Key] = p.WeightedDays
+		}
+		out := filepath.Join(outDir, fmt.Sprintf("hybrid-n%d.csv", denseTopN))
+		if err := writeCSV(out, rows, pipeline, unitBorough); err != nil {
+			return err
+		}
+		units, fine, rest := map[string]bool{}, 0, 0
+		for _, r := range rows {
+			if !units[r.Key] {
+				units[r.Key] = true
+				if strings.HasSuffix(r.Key, burden.RestSuffix) {
+					rest++
+				} else {
+					fine++
+				}
 			}
 		}
+		fmt.Printf("wrote %s: %d units (%d fine + %d rest)\n", out, len(units), fine, rest)
 	}
-	fmt.Printf("wrote %s: %d rows, %d units (%d fine cells + %d borough-rest), cell=%.0fkm\n",
-		out, len(rows), len(units), fineUnits, restUnits, cellM/1000)
 	fmt.Printf("\n%s\n", streetmanager.Attribution)
 	return nil
 }
@@ -121,7 +138,7 @@ func readExtract(path string, ws burden.Works) error {
 	return sc.Err()
 }
 
-func writeCSV(out string, rows []burden.Row, pipeline map[string]float64) error {
+func writeCSV(out string, rows []burden.Row, pipeline map[string]float64, unitBorough func(string) string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
@@ -132,10 +149,10 @@ func writeCSV(out string, rows []burden.Row, pipeline map[string]float64) error 
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{"month", "unit", "works", "work_days", "weighted_days", "planned_days", "emergency_days", "pipeline_weighted_days"})
+	w.Write([]string{"month", "unit", "borough", "works", "work_days", "weighted_days", "planned_days", "emergency_days", "pipeline_weighted_days"})
 	for _, r := range rows {
 		w.Write([]string{
-			r.Month, r.Key, strconv.Itoa(r.Works),
+			r.Month, r.Key, unitBorough(r.Key), strconv.Itoa(r.Works),
 			f2(r.WorkDays), f2(r.WeightedDays), f2(r.PlannedDays), f2(r.EmergencyDays),
 			f2(pipeline[r.Month+"|"+r.Key]),
 		})
