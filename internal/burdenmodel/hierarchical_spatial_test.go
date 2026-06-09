@@ -125,6 +125,48 @@ func TestSpatialMatrixCouplesNeighbours(t *testing.T) {
 	}
 }
 
+func TestSarSolveSolvesSystem(t *testing.T) {
+	// Two mutually-adjacent entities, spill 0.5. sarSolve must satisfy
+	// (I - spill*W)s = eps, i.e. s_i - spill*neighbourMean(s)_i == eps_i.
+	nbrs := [][]int{{1}, {0}}
+	eps := []float64{1, 0}
+	s := make([]float64, 2)
+	scratch := make([]float64, 2)
+	sarSolve(eps, s, scratch, nbrs, 0.5, 64)
+	nm := make([]float64, 2)
+	neighbourMean(nbrs, s, nm)
+	for i := range s {
+		if r := math.Abs(s[i] - 0.5*nm[i] - eps[i]); r > 1e-3 {
+			t.Errorf("residual at %d = %.5f, want ~0", i, r)
+		}
+	}
+}
+
+func TestSparseEnsembleCouplesNeighbours(t *testing.T) {
+	base := []float64{10, 10}
+	sig := []float64{1, 1}
+	coupled := JointEnsembleSparseFor([][]int{{1}, {0}}, 0.5, base, sig)
+	indep := JointEnsembleSparseFor([][]int{{}, {}}, 0.5, base, sig)
+	if c := corr(col(coupled, 0), col(coupled, 1)); c < 0.5 {
+		t.Errorf("coupled correlation = %.3f, want > 0.5", c)
+	}
+	if c := corr(col(indep, 0), col(indep, 1)); c > 0.2 {
+		t.Errorf("uncoupled correlation = %.3f, want ~0", c)
+	}
+}
+
+// helpers for the test above
+func JointEnsembleSparseFor(nbrs [][]int, spill float64, base, sig []float64) [][]float64 {
+	return jointEnsembleSparse(base, make([]float64, len(base)), make([]float64, len(base)), sig, 0, nbrs, spill, 600, 7)
+}
+func col(runs [][]float64, c int) []float64 {
+	out := make([]float64, len(runs))
+	for k := range runs {
+		out[k] = runs[k][c]
+	}
+	return out
+}
+
 func TestSpatialFactorModelShapeAndFallback(t *testing.T) {
 	m := SpatialFactorModel{ResidualK: 18, N: 32, FallbackK: 6, Seed: 1}
 	histories := map[string][]forecast.Point{}

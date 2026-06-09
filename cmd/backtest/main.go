@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/umbralcalc/traffic-forecaster/internal/burdenmodel"
 	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
@@ -65,13 +66,27 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 		forecast.PipelineResidual{FallbackK: 12, ResidualK: 0},  // all-history (biased by trend)
 		forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, // trailing window (trend-aware)
 		forecast.PipelineRatio{FallbackK: 12},
-		burdenmodel.StochadexBurden{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1},
 	}
+	// StochadexBurden runs N stochadex simulations per entity-month; fine at
+	// borough scale but ~3.8M tiny sims at grid scale. It's the per-borough
+	// marginal model — the grid story is the joint models — so skip it for grids.
+	if cellKm == 0 {
+		models = append(models, burdenmodel.StochadexBurden{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1})
+	}
+	tic := time.Now()
+	lap := func(label string) {
+		fmt.Fprintf(os.Stderr, "[timing] %-22s %v\n", label, time.Since(tic))
+		tic = time.Now()
+	}
+
 	results := forecast.Backtest(series, models, minHistory)
+	lap("per-cell empirical")
 	// Joint (cross-borough) models are scored together via BacktestJoint.
 	results = append(results, forecast.BacktestJoint(series,
 		burdenmodel.CommonFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
+	lap("joint common (marginal)")
 	results = append(results, forecast.BacktestJoint(series, spatial(100), minHistory))
+	lap("joint spatial (marginal)")
 	sort.Slice(results, func(i, j int) bool { return results[i].MeanCRPS < results[j].MeanCRPS })
 
 	fmt.Printf("\nexpanding-window backtest (min history %d months):\n", minHistory)
@@ -87,13 +102,15 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 	// Joint metric: London-wide TOTAL burden, where cross-borough coupling pays
 	// off. Compare the common-factor model against the best independent model.
 	fmt.Println("\nLondon-total burden CRPS (joint metric — coupling should beat independent):")
-	totals := []forecast.ModelResult{
-		forecast.BacktestJointTotal(series, spatial(200), minHistory),
-		forecast.BacktestJointTotal(series,
-			burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory),
-		forecast.BacktestJointTotal(series,
-			forecast.IndependentJoint{Model: forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, N: 200, Seed: 1}, minHistory),
-	}
+	totSpatial := forecast.BacktestJointTotal(series, spatial(200), minHistory)
+	lap("total spatial")
+	totCommon := forecast.BacktestJointTotal(series,
+		burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory)
+	lap("total common")
+	totIndep := forecast.BacktestJointTotal(series,
+		forecast.IndependentJoint{Model: forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, N: 200, Seed: 1}, minHistory)
+	lap("total independent")
+	totals := []forecast.ModelResult{totSpatial, totCommon, totIndep}
 	for _, r := range totals {
 		fmt.Printf("  %-34s mean CRPS %9.1f   cal.unif %6.2f\n", r.Name, r.MeanCRPS, r.CalUnif)
 	}
