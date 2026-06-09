@@ -17,7 +17,9 @@ package burden
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +42,11 @@ type Work struct {
 	// view).
 	FirstSeen time.Time
 	lastEvent time.Time
+	// Easting/Northing are the work's location (British National Grid metres);
+	// Located is false when no coordinate was present. Used for grid attribution.
+	Easting  float64
+	Northing float64
+	Located  bool
 }
 
 // Works accumulates the latest-known state per work reference.
@@ -90,6 +97,28 @@ func (ws Works) Apply(r streetmanager.Record) {
 	w.PlannedEnd = parseTime(get("proposed_end_date"))
 	w.ActualStart = parseTime(get("actual_start_date_time"))
 	w.ActualEnd = parseTime(get("actual_end_date_time"))
+	if e, n, ok := parsePoint(get("works_location_coordinates")); ok {
+		w.Easting, w.Northing, w.Located = e, n, true
+	}
+}
+
+// parsePoint parses a "POINT(easting northing)" BNG string.
+func parsePoint(s string) (e, n float64, ok bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "POINT(") || !strings.HasSuffix(s, ")") {
+		return 0, 0, false
+	}
+	inner := s[len("POINT(") : len(s)-1]
+	sp := strings.IndexByte(inner, ' ')
+	if sp <= 0 {
+		return 0, 0, false
+	}
+	e, err1 := strconv.ParseFloat(inner[:sp], 64)
+	n, err2 := strconv.ParseFloat(strings.TrimSpace(inner[sp+1:]), 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return e, n, true
 }
 
 // Window returns the work's active interval, preferring realised (actual) dates
@@ -129,37 +158,52 @@ type Cell struct {
 
 // Row is a flattened (month, borough) burden record.
 type Row struct {
-	Month   string // YYYY-MM
-	Borough string
+	Month string // YYYY-MM
+	Key   string // spatial key: borough name or grid cell id
 	Cell
 }
 
-// Series computes the per-borough monthly burden over [from, to] (inclusive of
-// the months containing those instants), returned sorted by month then borough.
-func (ws Works) Series(from, to time.Time) []Row {
-	grid := map[string]map[string]*Cell{} // month -> borough -> cell
+// keyFunc maps a work to its spatial key (borough or cell); ok=false drops it.
+type keyFunc func(*Work) (string, bool)
+
+// windowFunc returns a work's contributing interval (realised or planned).
+type windowFunc func(*Work) (time.Time, time.Time, bool)
+
+// seriesBy is the shared accumulation core: for every work it adds weighted
+// work-days to each month its window overlaps, grouped by the spatial key. When
+// asOfGate is set, a month only counts works first seen (filed) before it began
+// (the vintaged pipeline rule).
+func (ws Works) seriesBy(key keyFunc, window windowFunc, asOfGate bool, from, to time.Time) []Row {
+	grid := map[string]map[string]*Cell{} // month -> key -> cell
 	for _, w := range ws {
-		start, end, ok := w.Window()
-		if !ok || w.Borough == "" {
+		start, end, ok := window(w)
+		if !ok {
+			continue
+		}
+		k, kok := key(w)
+		if !kok {
 			continue
 		}
 		weight := TMWeight(w.TrafficMgmt)
 		emergency := IsEmergency(w.Category)
 		for m := monthStart(maxTime(start, from)); !m.After(end) && !m.After(to); m = m.AddDate(0, 1, 0) {
+			if asOfGate && !w.FirstSeen.IsZero() && !w.FirstSeen.Before(m) {
+				continue
+			}
 			days := overlapDays(start, end, m, m.AddDate(0, 1, 0))
 			if days <= 0 {
 				continue
 			}
-			key := m.Format("2006-01")
-			byBorough := grid[key]
-			if byBorough == nil {
-				byBorough = map[string]*Cell{}
-				grid[key] = byBorough
+			month := m.Format("2006-01")
+			byKey := grid[month]
+			if byKey == nil {
+				byKey = map[string]*Cell{}
+				grid[month] = byKey
 			}
-			c := byBorough[w.Borough]
+			c := byKey[k]
 			if c == nil {
 				c = &Cell{}
-				byBorough[w.Borough] = c
+				byKey[k] = c
 			}
 			c.Works++
 			c.WorkDays += days
@@ -174,49 +218,59 @@ func (ws Works) Series(from, to time.Time) []Row {
 	return flatten(grid)
 }
 
-// PipelineSeries computes the FORWARD pipeline estimate of works burden per
-// borough-month over [from, to], vintaged honestly: a work contributes to month
-// m only if it was first seen (filed) before m began, and only via its PROPOSED
-// window. Reactive emergency works — filed at the time they happen — therefore
-// drop out of the estimate for any month they would otherwise fall in, which is
-// exactly the known-ahead planned signal we want as a covariate.
-//
-// v1 simplification: proposed dates are taken from the work's latest known state,
-// not re-vintaged to the forecast instant; only the filing (FirstSeen) is gated.
+func boroughKey(w *Work) (string, bool)                   { return w.Borough, w.Borough != "" }
+func realisedWindow(w *Work) (time.Time, time.Time, bool) { return w.Window() }
+func plannedWindow(w *Work) (time.Time, time.Time, bool)  { return w.PlannedWindow() }
+
+// Series computes the per-borough realised monthly burden over [from, to].
+func (ws Works) Series(from, to time.Time) []Row {
+	return ws.seriesBy(boroughKey, realisedWindow, false, from, to)
+}
+
+// PipelineSeries computes the per-borough FORWARD pipeline estimate, vintaged so
+// a work contributes to a month only if filed before it began, via its proposed
+// window — so reactive emergency works drop out of the forward view. (v1: the
+// proposed dates are the latest known state; only filing is gated.)
 func (ws Works) PipelineSeries(from, to time.Time) []Row {
-	grid := map[string]map[string]*Cell{}
-	for _, w := range ws {
-		start, end, ok := w.PlannedWindow()
-		if !ok || w.Borough == "" {
-			continue
+	return ws.seriesBy(boroughKey, plannedWindow, true, from, to)
+}
+
+// CellSeries and CellPipelineSeries are the grid-cell analogues, attributing
+// each located work to a square BNG cell of the given size (metres).
+func (ws Works) CellSeries(cellM float64, from, to time.Time) []Row {
+	return ws.seriesBy(cellKeyFunc(cellM), realisedWindow, false, from, to)
+}
+
+func (ws Works) CellPipelineSeries(cellM float64, from, to time.Time) []Row {
+	return ws.seriesBy(cellKeyFunc(cellM), plannedWindow, true, from, to)
+}
+
+func cellKeyFunc(cellM float64) keyFunc {
+	return func(w *Work) (string, bool) {
+		if !w.Located {
+			return "", false
 		}
-		weight := TMWeight(w.TrafficMgmt)
-		for m := monthStart(maxTime(start, from)); !m.After(end) && !m.After(to); m = m.AddDate(0, 1, 0) {
-			// As-of gate: only works filed before this month began are "known".
-			if !w.FirstSeen.IsZero() && !w.FirstSeen.Before(m) {
-				continue
-			}
-			days := overlapDays(start, end, m, m.AddDate(0, 1, 0))
-			if days <= 0 {
-				continue
-			}
-			key := m.Format("2006-01")
-			byBorough := grid[key]
-			if byBorough == nil {
-				byBorough = map[string]*Cell{}
-				grid[key] = byBorough
-			}
-			c := byBorough[w.Borough]
-			if c == nil {
-				c = &Cell{}
-				byBorough[w.Borough] = c
-			}
-			c.Works++
-			c.WorkDays += days
-			c.WeightedDays += weight * days
-		}
+		return CellID(w.Easting, w.Northing, cellM), true
 	}
-	return flatten(grid)
+}
+
+// CellID is the grid cell id "i_j" containing a BNG coordinate at the given cell
+// size; CellCentroid inverts it to the cell centre (metres).
+func CellID(easting, northing, cellM float64) string {
+	return strconv.Itoa(int(math.Floor(easting/cellM))) + "_" + strconv.Itoa(int(math.Floor(northing/cellM)))
+}
+
+func CellCentroid(id string, cellM float64) (easting, northing float64, ok bool) {
+	parts := strings.SplitN(id, "_", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	i, err1 := strconv.Atoi(parts[0])
+	j, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return (float64(i) + 0.5) * cellM, (float64(j) + 0.5) * cellM, true
 }
 
 // TMWeight maps a traffic-management type to a provisional burden weight. The
@@ -288,16 +342,16 @@ func titleBorough(s string) string {
 // flatten turns the month->borough->cell grid into a sorted row slice.
 func flatten(grid map[string]map[string]*Cell) []Row {
 	var rows []Row
-	for month, byBorough := range grid {
-		for borough, c := range byBorough {
-			rows = append(rows, Row{Month: month, Borough: borough, Cell: *c})
+	for month, byKey := range grid {
+		for k, c := range byKey {
+			rows = append(rows, Row{Month: month, Key: k, Cell: *c})
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Month != rows[j].Month {
 			return rows[i].Month < rows[j].Month
 		}
-		return rows[i].Borough < rows[j].Borough
+		return rows[i].Key < rows[j].Key
 	})
 	return rows
 }

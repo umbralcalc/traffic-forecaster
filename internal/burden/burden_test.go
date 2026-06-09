@@ -107,6 +107,64 @@ func TestPipelineSeriesAsOfGate(t *testing.T) {
 	}
 }
 
+func TestParsePoint(t *testing.T) {
+	e, n, ok := parsePoint("POINT(523431.10 182057.55)")
+	if !ok || e != 523431.10 || n != 182057.55 {
+		t.Errorf("parsePoint = %v,%v,%v", e, n, ok)
+	}
+	if _, _, ok := parsePoint(""); ok {
+		t.Error("empty should not parse")
+	}
+	if _, _, ok := parsePoint("LINESTRING(1 2,3 4)"); ok {
+		t.Error("non-point should not parse")
+	}
+}
+
+func TestCellIDAndCentroid(t *testing.T) {
+	// 2km cells: easting 523431 -> floor(523431/2000)=261, northing 182057 -> 91.
+	id := CellID(523431, 182057, 2000)
+	if id != "261_91" {
+		t.Fatalf("CellID = %q, want 261_91", id)
+	}
+	e, n, ok := CellCentroid(id, 2000)
+	if !ok || e != 261.5*2000 || n != 91.5*2000 {
+		t.Errorf("CellCentroid = %v,%v,%v", e, n, ok)
+	}
+}
+
+func recGeo(eventTime, ref, point string) streetmanager.Record {
+	obj := map[string]string{
+		"work_reference_number":      ref,
+		"highway_authority":          "LONDON BOROUGH OF SOUTHWARK",
+		"work_category":              "Standard",
+		"traffic_management_type":    "Lane closure",
+		"actual_start_date_time":     "2026-06-01T00:00:00Z",
+		"actual_end_date_time":       "2026-06-11T00:00:00Z",
+		"works_location_coordinates": point,
+	}
+	b, _ := json.Marshal(obj)
+	return streetmanager.Record{EventTime: eventTime, ObjectData: b}
+}
+
+func TestCellSeriesAttributesByCoordinate(t *testing.T) {
+	ws := Works{}
+	ws.Apply(recGeo("2026-06-02T00:00:00Z", "W1", "POINT(523431 182057)"))
+	ws.Apply(recGeo("2026-06-02T00:00:00Z", "W2", "POINT(523900 182400)")) // same 2km cell
+	ws.Apply(recGeo("2026-06-02T00:00:00Z", "W3", "POINT(530000 182057)")) // different cell
+
+	rows := ws.CellSeries(2000, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC))
+	byCell := map[string]int{}
+	for _, r := range rows {
+		byCell[r.Key] = r.Works
+	}
+	if byCell["261_91"] != 2 {
+		t.Errorf("cell 261_91 works = %d, want 2", byCell["261_91"])
+	}
+	if len(byCell) != 2 {
+		t.Errorf("distinct cells = %d, want 2: %v", len(byCell), byCell)
+	}
+}
+
 func TestWorksLatestWinsAndSeries(t *testing.T) {
 	ws := Works{}
 	// Older event: planned only.
@@ -128,8 +186,8 @@ func TestWorksLatestWinsAndSeries(t *testing.T) {
 		t.Fatalf("want 1 row, got %d: %+v", len(rows), rows)
 	}
 	r := rows[0]
-	if r.Month != "2026-06" || r.Borough != "Southwark" {
-		t.Errorf("row key = %s/%s", r.Month, r.Borough)
+	if r.Month != "2026-06" || r.Key != "Southwark" {
+		t.Errorf("row key = %s/%s", r.Month, r.Key)
 	}
 	if r.Works != 1 || r.WorkDays != 10 {
 		t.Errorf("works=%d workdays=%v, want 1 / 10", r.Works, r.WorkDays)
