@@ -191,10 +191,11 @@ func jointEnsembleDirect(
 // stochadex hierarchical simulation. Boroughs without a usable pipeline or
 // enough history fall back to the per-entity SeasonalRecent baseline.
 type CommonFactorModel struct {
-	ResidualK int
-	N         int
-	FallbackK int
-	Seed      uint64
+	ResidualK  int
+	N          int
+	FallbackK  int
+	Seed       uint64
+	NoPipeline bool // forecast a target with no forward covariate (see SpatialFactorModel)
 }
 
 func (CommonFactorModel) Name() string { return "hier-common" }
@@ -214,13 +215,12 @@ func (m CommonFactorModel) PredictAll(
 	resid := map[string]map[int]float64{}
 	var modeled []string
 	for b, hist := range histories {
-		t := targets[b]
-		if t.Pipeline <= 0 {
+		if !m.NoPipeline && targets[b].Pipeline <= 0 {
 			continue
 		}
 		rm := map[int]float64{}
 		for _, p := range hist {
-			if p.Pipeline > 0 {
+			if m.NoPipeline || p.Pipeline > 0 {
 				rm[p.Year*12+p.Month-1] = p.Value - p.Pipeline
 			}
 		}

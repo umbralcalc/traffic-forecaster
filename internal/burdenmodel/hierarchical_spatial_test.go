@@ -167,6 +167,28 @@ func col(runs [][]float64, c int) []float64 {
 	return out
 }
 
+func TestSpatialFactorModelNoPipeline(t *testing.T) {
+	// No pipeline anywhere (e.g. accidents): NoPipeline mode must still model
+	// units from their history (base rate + structure), not fall back.
+	m := SpatialFactorModel{ResidualK: 18, N: 32, FallbackK: 6, Seed: 1, NoPipeline: true}
+	histories := map[string][]forecast.Point{}
+	targets := map[string]forecast.Point{}
+	for _, c := range []string{"261_91", "262_91", "261_92"} {
+		var pts []forecast.Point
+		for mth := 1; mth <= 12; mth++ {
+			pts = append(pts, forecast.Point{Year: 2025, Month: mth, Value: 5 + float64(mth%3)}) // no Pipeline
+		}
+		histories[c] = pts
+		targets[c] = forecast.Point{Year: 2026, Month: 1} // Pipeline 0
+	}
+	out := m.PredictAll(histories, targets)
+	for _, c := range []string{"261_91", "262_91", "261_92"} {
+		if len(out[c]) != m.N {
+			t.Errorf("cell %s ensemble = %d, want %d (should be modelled, not fallback)", c, len(out[c]), m.N)
+		}
+	}
+}
+
 func TestSpatialFactorModelShapeAndFallback(t *testing.T) {
 	m := SpatialFactorModel{ResidualK: 18, N: 32, FallbackK: 6, Seed: 1}
 	histories := map[string][]forecast.Point{}

@@ -27,17 +27,18 @@ func main() {
 	entity := flag.String("entity", "borough", "entity column (borough or cell)")
 	cellKm := flag.Float64("cell-km", 0, "if >0, treat entities as grid cells and use grid adjacency")
 	maxEntities := flag.Int("max-entities", 0, "keep only the N busiest entities (0 = all)")
+	noPipeline := flag.Bool("no-pipeline", false, "no forward covariate (e.g. accidents): forecast base rate + structure")
 	lastRealised := flag.String("last-realised", "2026-05", "last fully-realised month, YYYY-MM (forward tail excluded)")
 	minHistory := flag.Int("min-history", 13, "months of history required before scoring a point")
 	flag.Parse()
 
-	if err := run(*in, *col, *entity, *cellKm, *maxEntities, *lastRealised, *minHistory); err != nil {
+	if err := run(*in, *col, *entity, *cellKm, *maxEntities, *noPipeline, *lastRealised, *minHistory); err != nil {
 		fmt.Fprintln(os.Stderr, "backtest:", err)
 		os.Exit(1)
 	}
 }
 
-func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised string, minHistory int) error {
+func run(in, col, entity string, cellKm float64, maxEntities int, noPipeline bool, lastRealised string, minHistory int) error {
 	series, group, entities, months, err := loadSeries(in, col, entity, lastRealised, maxEntities)
 	if err != nil {
 		return err
@@ -55,7 +56,15 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 		adjacency = burdenmodel.GridAdjacency(keys)
 	}
 	spatial := func(n int) burdenmodel.SpatialFactorModel {
-		return burdenmodel.SpatialFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, Adjacency: adjacency}
+		return burdenmodel.SpatialFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, Adjacency: adjacency, NoPipeline: noPipeline}
+	}
+	common := func(n int) burdenmodel.CommonFactorModel {
+		return burdenmodel.CommonFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, NoPipeline: noPipeline}
+	}
+	// Independent per-unit baseline: no forward covariate -> SeasonalRecent.
+	var indepModel forecast.Model = forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}
+	if noPipeline {
+		indepModel = forecast.SeasonalRecent{K: 12}
 	}
 
 	models := []forecast.Model{
@@ -82,8 +91,7 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 	results := forecast.Backtest(series, models, minHistory)
 	lap("per-cell empirical")
 	// Joint (cross-borough) models are scored together via BacktestJoint.
-	results = append(results, forecast.BacktestJoint(series,
-		burdenmodel.CommonFactorModel{ResidualK: 18, N: 100, FallbackK: 12, Seed: 1}, minHistory))
+	results = append(results, forecast.BacktestJoint(series, common(100), minHistory))
 	lap("joint common (marginal)")
 	results = append(results, forecast.BacktestJoint(series, spatial(100), minHistory))
 	lap("joint spatial (marginal)")
@@ -111,11 +119,10 @@ func run(in, col, entity string, cellKm float64, maxEntities int, lastRealised s
 	fmt.Println("\nLondon-total burden CRPS (joint metric — coupling should beat independent):")
 	totSpatial := forecast.BacktestJointTotal(series, spatial(200), minHistory)
 	lap("total spatial")
-	totCommon := forecast.BacktestJointTotal(series,
-		burdenmodel.CommonFactorModel{ResidualK: 18, N: 200, FallbackK: 12, Seed: 1}, minHistory)
+	totCommon := forecast.BacktestJointTotal(series, common(200), minHistory)
 	lap("total common")
 	totIndep := forecast.BacktestJointTotal(series,
-		forecast.IndependentJoint{Model: forecast.PipelineResidual{FallbackK: 12, ResidualK: 18}, N: 200, Seed: 1}, minHistory)
+		forecast.IndependentJoint{Model: indepModel, N: 200, Seed: 1}, minHistory)
 	lap("total independent")
 	totals := []forecast.ModelResult{totSpatial, totCommon, totIndep}
 	if len(group) > 0 {

@@ -22,6 +22,10 @@ type SpatialFactorModel struct {
 	// Adjacency maps each entity to its neighbours. Defaults to the borough graph
 	// when nil; pass a grid adjacency (see GridAdjacency) for cell-level series.
 	Adjacency map[string][]string
+	// NoPipeline forecasts a target with no forward covariate (e.g. accidents):
+	// the central estimate is the per-unit base rate plus the common/spatial
+	// structure, and units gate on history length rather than pipeline presence.
+	NoPipeline bool
 }
 
 func (m SpatialFactorModel) adjacency() map[string][]string {
@@ -46,13 +50,14 @@ func (m SpatialFactorModel) PredictAll(
 	resid := map[string]map[int]float64{}
 	var modeled []string
 	for b, hist := range histories {
-		t := targets[b]
-		if t.Pipeline <= 0 {
+		// With NoPipeline (e.g. accidents — no forward plan) the residual is the
+		// value itself and units gate on history length, not pipeline presence.
+		if !m.NoPipeline && targets[b].Pipeline <= 0 {
 			continue
 		}
 		rm := map[int]float64{}
 		for _, p := range hist {
-			if p.Pipeline > 0 {
+			if m.NoPipeline || p.Pipeline > 0 {
 				rm[p.Year*12+p.Month-1] = p.Value - p.Pipeline
 			}
 		}

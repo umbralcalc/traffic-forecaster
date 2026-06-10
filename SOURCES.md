@@ -29,6 +29,19 @@ predictions/resolutions.
 - Attribution: *Contains public sector information licensed under the Open
   Government Licence v3.0 (DfT Street Manager).*
 
+## DfT STATS19 — road collision data (the unplanned/incident core)
+
+- Files (public, OGL v3.0): `https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-collision-{year}.csv`
+  and `...-collision-last-5-years.csv` — national, published annually, current to
+  the latest published year (~2023).
+- Used for: the genuinely-unplanned **accident burden** term — per-collision
+  records with British National Grid coordinates (same 2km cells as works),
+  `collision_severity` (Fatal/Serious/Slight) and date, filtered to London. No
+  forward "pipeline" exists for accidents — that is the point.
+- Licence: Open Government Licence v3.0 (Crown copyright).
+- Attribution: *Contains public sector information licensed under the Open
+  Government Licence v3.0 (DfT STATS19).*
+
 ## DfT road traffic counts (AADF) — held for a future long-horizon marquee
 
 - Annual modelled link-level counts; not used in the monthly forecast. Parked

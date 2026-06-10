@@ -13,3 +13,6 @@
 
 # Transient sweep log
 /sweep.log
+
+# Accident burden derived from DfT STATS19 (external) — cite, do not commit
+/data/incidents/
