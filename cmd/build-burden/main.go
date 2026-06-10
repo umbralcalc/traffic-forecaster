@@ -72,7 +72,7 @@ func run(inDir, out, from, to string) error {
 	// Forward pipeline estimate (vintaged) joined on (month, borough).
 	pipeline := map[string]float64{}
 	for _, p := range ws.PipelineSeries(fromT, toT) {
-		pipeline[p.Month+"|"+p.Borough] = p.WeightedDays
+		pipeline[p.Month+"|"+p.Key] = p.WeightedDays
 	}
 	if err := writeCSV(out, rows, pipeline); err != nil {
 		return err
@@ -122,10 +122,10 @@ func writeCSV(out string, rows []burden.Row, pipeline map[string]float64) error 
 	w.Write([]string{"month", "borough", "works", "work_days", "weighted_days", "planned_days", "emergency_days", "pipeline_weighted_days"})
 	for _, r := range rows {
 		w.Write([]string{
-			r.Month, r.Borough,
+			r.Month, r.Key,
 			strconv.Itoa(r.Works),
 			f2(r.WorkDays), f2(r.WeightedDays), f2(r.PlannedDays), f2(r.EmergencyDays),
-			f2(pipeline[r.Month+"|"+r.Borough]),
+			f2(pipeline[r.Month+"|"+r.Key]),
 		})
 	}
 	return w.Error()
@@ -141,7 +141,7 @@ func summarise(rows []burden.Row, out string) {
 	var totWeighted, totPlanned, totEmergency float64
 	for _, r := range rows {
 		months[r.Month] = true
-		boroughs[r.Borough] = true
+		boroughs[r.Key] = true
 		totWeighted += r.WeightedDays
 		totPlanned += r.PlannedDays
 		totEmergency += r.EmergencyDays
@@ -160,7 +160,7 @@ func summarise(rows []burden.Row, out string) {
 	for i := 0; i < len(top) && i < 10; i++ {
 		r := top[i]
 		fmt.Printf("  %s  %-22s weighted=%8.0f  works=%-5d planned/emerg=%.0f/%.0f\n",
-			r.Month, r.Borough, r.WeightedDays, r.Works, r.PlannedDays, r.EmergencyDays)
+			r.Month, r.Key, r.WeightedDays, r.Works, r.PlannedDays, r.EmergencyDays)
 	}
 }
 

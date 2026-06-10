@@ -1,8 +1,9 @@
 // Command build-accident-burden streams the DfT STATS19 road-collision dataset,
-// filters to London, and writes a severity-weighted accident-burden series at the
-// same 2km BNG grid cells used for works — the genuinely-unplanned (no-pipeline)
-// incident core of the forecast. Output is derived external data: gitignored,
-// cited in SOURCES.md.
+// filters to London, and writes a per-2km-cell monthly collision series — the
+// core of the road-safety-rating product. Each cell-month carries the all-severity
+// collision count and the KSI count (killed or seriously injured, the standard
+// road-safety tier); these are the Poisson targets the safety rating is built on.
+// Output is derived external data: gitignored, cited in SOURCES.md.
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -30,7 +32,7 @@ const (
 )
 
 // severityWeight maps STATS19 collision_severity (1=Fatal,2=Serious,3=Slight) to
-// a provisional burden weight.
+// a provisional weight (kept for the optional weighted column / dashboards).
 func severityWeight(code string) float64 {
 	switch code {
 	case "1":
@@ -42,6 +44,10 @@ func severityWeight(code string) float64 {
 	}
 	return 0
 }
+
+// isKSI reports whether a collision is Killed-or-Seriously-Injured (severity 1 or
+// 2) — the standard UK road-safety tier and our 'serious' rating's target.
+func isKSI(code string) bool { return code == "1" || code == "2" }
 
 func main() {
 	url := flag.String("url", defaultURL, "STATS19 collision CSV URL")
@@ -85,9 +91,10 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 		return fmt.Errorf("STATS19 columns not found in header")
 	}
 
-	// cell -> month -> (count, weighted)
+	// cell -> month -> (all count, KSI count, severity-weighted)
 	type cell struct {
 		count    int
+		ksi      int
 		weighted float64
 	}
 	grid := map[string]map[string]*cell{}
@@ -121,6 +128,9 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 			bm[month] = c
 		}
 		c.count++
+		if isKSI(rec[si]) {
+			c.ksi++
+		}
 		c.weighted += w
 	}
 
@@ -134,19 +144,45 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	w.Write([]string{"month", "cell", "accidents", "weighted_days", "pipeline_weighted_days"})
-	var rows int
-	months := map[string]bool{}
-	for cid, bm := range grid {
-		for month, c := range bm {
-			w.Write([]string{month, cid, strconv.Itoa(c.count),
-				strconv.FormatFloat(c.weighted, 'f', 2, 64), "0"})
-			rows++
-			months[month] = true
+	w.Write([]string{"month", "cell", "accidents", "ksi", "weighted_days"})
+
+	// Emit the DENSE cell × month panel: every cell that ever sees a collision is
+	// "at risk" in every month, so a month with none is a real zero observation
+	// (the strongest safety signal) — not a missing row. The Poisson intensity
+	// model needs those zeros. The observed-month set is the contiguous range,
+	// since London as a whole has collisions every month.
+	monthSet := map[string]bool{}
+	for _, bm := range grid {
+		for month := range bm {
+			monthSet[month] = true
 		}
 	}
-	fmt.Printf("STATS19: %d collisions, %d in London; wrote %s: %d rows, %d cells, %d months\n",
-		total, london, out, rows, len(grid), len(months))
+	months := make([]string, 0, len(monthSet))
+	for m := range monthSet {
+		months = append(months, m)
+	}
+	sort.Strings(months)
+	cells := make([]string, 0, len(grid))
+	for cid := range grid {
+		cells = append(cells, cid)
+	}
+	sort.Strings(cells)
+
+	var rows int
+	for _, cid := range cells {
+		bm := grid[cid]
+		for _, month := range months {
+			c := bm[month]
+			if c == nil {
+				c = &cell{}
+			}
+			w.Write([]string{month, cid, strconv.Itoa(c.count), strconv.Itoa(c.ksi),
+				strconv.FormatFloat(c.weighted, 'f', 2, 64)})
+			rows++
+		}
+	}
+	fmt.Printf("STATS19: %d collisions, %d in London; wrote %s: %d rows (dense), %d cells, %d months\n",
+		total, london, out, rows, len(cells), len(months))
 	fmt.Println("\nContains public sector information licensed under the Open Government Licence v3.0 (DfT STATS19).")
 	return nil
 }
