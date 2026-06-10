@@ -44,7 +44,9 @@ type prediction struct {
 }
 
 func main() {
-	in := flag.String("in", filepath.Join("data", "burden", "hybrid-n150.csv"), "hybrid burden series CSV")
+	in := flag.String("in", filepath.Join("data", "burden", "hybrid-n150.csv"), "burden series CSV")
+	entity := flag.String("entity", "unit", "entity column (unit for works, cell for accidents)")
+	noPipeline := flag.Bool("no-pipeline", false, "no forward covariate (e.g. accidents): base rate + structure")
 	month := flag.String("month", "", "target month YYYY-MM (required)")
 	lastRealised := flag.String("last-realised", "", "last realised month YYYY-MM (default: month before target)")
 	out := flag.String("out", filepath.Join("data", "predictions"), "predictions directory")
@@ -53,13 +55,13 @@ func main() {
 	seed := flag.Uint64("seed", 1, "RNG seed")
 	flag.Parse()
 
-	if err := run(*in, *month, *lastRealised, *out, *residualK, *n, *seed); err != nil {
+	if err := run(*in, *entity, *noPipeline, *month, *lastRealised, *out, *residualK, *n, *seed); err != nil {
 		fmt.Fprintln(os.Stderr, "forecast:", err)
 		os.Exit(1)
 	}
 }
 
-func run(in, month, lastRealised, out string, residualK, n int, seed uint64) error {
+func run(in, entity string, noPipeline bool, month, lastRealised, out string, residualK, n int, seed uint64) error {
 	if month == "" {
 		return fmt.Errorf("-month is required (YYYY-MM)")
 	}
@@ -77,7 +79,7 @@ func run(in, month, lastRealised, out string, residualK, n int, seed uint64) err
 	}
 	lastIdx := series.MonthIndex(ly, lm)
 
-	loaded, err := series.Load(in, "weighted_days", "unit")
+	loaded, err := series.Load(in, "weighted_days", entity)
 	if err != nil {
 		return err
 	}
@@ -92,7 +94,7 @@ func run(in, month, lastRealised, out string, residualK, n int, seed uint64) err
 			switch {
 			case idx <= lastIdx:
 				hist = append(hist, p)
-			case idx == targetIdx:
+			case idx == targetIdx && !noPipeline:
 				pipeline = p.Pipeline // the target month's known forward pipeline
 			}
 		}
@@ -103,7 +105,7 @@ func run(in, month, lastRealised, out string, residualK, n int, seed uint64) err
 	units := keys(loaded.Series)
 	adjacency := burdenmodel.GridAdjacency(units)
 	model := burdenmodel.SpatialFactorModel{
-		ResidualK: residualK, N: n, FallbackK: 12, Seed: seed, Adjacency: adjacency,
+		ResidualK: residualK, N: n, FallbackK: 12, Seed: seed, Adjacency: adjacency, NoPipeline: noPipeline,
 	}
 	ensembles := model.PredictAll(histories, targets)
 
