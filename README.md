@@ -1,88 +1,89 @@
 # traffic-forecaster
 
-A monthly, honestly-scored forecast of **London roadworks-disruption burden** at
-adaptive spatial resolution, published as a frozen interactive dashboard. One
-Go + stochadex repo.
+A monthly, honestly-scored **London road-safety rating**, published as a frozen
+interactive dashboard. One Go + stochadex repo.
 
 This page is the methodology, versioned alongside the predictions it describes.
-The machine-readable contract is [`config/disruptions.yaml`](config/disruptions.yaml);
-data sources and their licences are in [`SOURCES.md`](SOURCES.md); the full design
+Data sources and their licences are in [`SOURCES.md`](SOURCES.md); the full design
 and the road to here are in [`PLAN.md`](PLAN.md).
 
 ## What we forecast
 
-For each spatial **unit** and each calendar month, a **predictive distribution**
-over its *roadworks-disruption burden* — how much the area's roads are disrupted
-by street works that month. We forecast the distribution, not a point estimate;
-the distribution is the product.
+For each **1km British National Grid cell** and each calendar month, a published
+**road-safety rating** — the probability the cell sees **no collision** that
+month — in two tiers:
 
-**Roadworks, named precisely.** The scored target is street-works disruption from
-DfT Street Manager (planned + emergency works). Non-works incidents (accidents,
-congestion) are a planned *v2* term from the TfL feed — which we already bank as
-daily snapshots — not part of v1.
+- **Headline** — `S = P(no collision of any severity)`.
+- **Serious (KSI)** — `P(no killed-or-seriously-injured collision)`, the standard
+  UK road-safety metric.
 
-## Adaptive spatial resolution
+We forecast a distribution, not a point estimate. The rating is what we publish;
+we also surface the expected count and the "bad month" (P95) tail, since the
+rating saturates toward 0 in the busiest cells.
 
-A pure borough grid is too coarse to see local structure; a pure fine grid leaves
-most cells too sparse to forecast honestly. So the unit set is **adaptive**:
-
-- the **busiest 150 cells** (2 km British National Grid) stay as **fine cells**;
-- every other work folds into its borough's pooled **"·rest"** unit.
-
-≈183 units — fine detail in the busy core, well-populated units in the sparse
-remainder. This is the resolution at which the nearest-neighbour coupling
-resolves *and* per-unit calibration stays defensible.
-
-## How burden is defined (the scored target)
-
-For a work with traffic-management type *t* active *d* days within a month, it
-contributes `weight(t) × d` to its unit's burden (road closure 1.0 … no-incursion
-0.05). A unit's monthly burden is the sum over all works. Realised from each
-work's actual (else proposed) window; see [`internal/burden`](internal/burden).
+**Collisions, named precisely.** The target is DfT STATS19 personal-injury road
+collisions — genuinely unpredictable events, not roadworks. (Earlier versions
+forecast roadworks-disruption burden; we dropped it. Works are ~known in advance
+from permit data, and we verified they have no measurable effect on the collision
+rate at this resolution — so they are neither the target nor a covariate.)
 
 ## The model
 
-A hierarchical forecaster (`hier-spatial`):
-- a **shared London common factor** couples all units (correct co-movement, so
-  the London-wide total has the right variance);
-- a **nearest-neighbour spatial coupling** links adjacent fine cells;
-- the **vintaged forward permit pipeline** — works already filed for the target
-  month, as known at forecast time — is the central covariate.
+A hierarchical **Poisson intensity** model. For cell *i*, month *t*:
 
-It emits a predictive **ensemble** per unit. Backtested offline over **6 years**
-of Street Manager history before publishing anything.
+```
+log λ_it = base_i + season_moy(t) + f_t        S = E_f[ exp(−λ) ]
+```
 
-## Resolution & honesty rules
+- **base_i** — the cell's baseline rate (deseasonalised, shrunk toward the London
+  pool);
+- **season** — a month-of-year multiplier pooled across cells;
+- **f_t** — a shared **London log-anomaly** coupling every cell in a good/bad
+  month (COVID, weather years, trend).
 
-- **Settle window.** A month resolves from its **settled Street Manager monthly
-  archive** (target month + a ~45-day buffer) so late-filed and altered permits
-  and actual start/stop events are in. Fixed in advance; never changed.
-- **Void rule.** A unit-month whose archive is missing or truncated is **voided
-  and the gap published** — hiding an outage is the one dishonesty this project
-  refuses.
-- **Proof of commit.** Predictions land in one commit; resolutions in a later
-  commit. The git log itself evidences that we predicted before we knew.
+The `exp` link keeps the intensity positive (no clamp, hence no truncation
+miscalibration), and forecasts integrate over `f` and Poisson sampling to give a
+**jointly coherent** ensemble across cells. See [`internal/safety`](internal/safety).
+
+## The modelling unit (1km, settled empirically)
+
+A resolution sweep ([`cmd/grid-sweep`](cmd/grid-sweep)) over 0.5–4km grids and
+local-authority districts showed the model's skill over a naive per-cell base-rate
+**rises as cells get finer**: the hierarchy pools sparse cells and wins, while
+coarse units are better served by their own mean. **1km** is the chosen unit —
+strong skill (especially KSI), excellent calibration, robust to STATS19 geocoding
+precision, ~2,900 cells.
+
+## Validation & honesty rules
+
+- **Backtest.** Expanding-window, no-leakage ([`cmd/safety-backtest`](cmd/safety-backtest)),
+  scoring the published quantities against a naive base-rate and climatology. The
+  model is well-calibrated out-of-sample (reliability on the diagonal) and beats
+  naive on the proper scores.
+- **Proof of commit.** [`cmd/forecast`](cmd/forecast) commits a month's rating to
+  `data/predictions/` *before* the realised data exists; [`cmd/resolve`](cmd/resolve)
+  settles it against a later STATS19 release, refusing months not yet published
+  and asserting no leakage. The git log evidences that we predicted before we knew.
+- **Cadence.** STATS19 is annual with a ~1-year lag, so forward validation is
+  annual and slow — committed now, scored ~12–18 months later. We state this
+  plainly rather than pretend to a faster loop.
 
 ## Scoring
 
-- **Primary:** CRPS on the per-unit burden, averaged over unit-months.
-- **Joint:** CRPS on the London-wide total (sum over units) — this is where the
-  coupling earns its keep, and where independent models are over-confident.
-- **Calibration:** a running PIT histogram across everything resolved to date —
-  the same plot each month, gaining points over time. Early on it is noise; the
-  honest framing is that the calibration curve *is* the deliverable, and it is
-  noise until it isn't.
+- **Brier and log-loss** on the published P(incident), per cell-month.
+- **Poisson deviance** on the expected count.
+- **Calibration:** a running reliability curve across everything resolved to date —
+  the same plot each month, gaining points over time. The calibration curve *is*
+  the deliverable, and it is noise until it isn't.
 
 ## Status
 
-Draft. Weights, the dense-cell count, and the settle window are provisional and
-may be tuned **only** before the first published month; after that they freeze.
-The daily TfL snapshotter is live (banking the v2 incident signal); the forecast
-and resolve commands and the dashboard are in development. See
-[`PLAN.md`](PLAN.md) for the build order.
+Draft. The model unit (1km) and the validation loop are in place; a genuine
+forward 2025 prediction is committed and awaits DfT's 2025 release. Next are the
+agreed model enhancements (spatial smoothing; a stochadex latent factor for
+multi-horizon forecasts) and the dashboard. See [`PLAN.md`](PLAN.md).
 
 ## Attribution
 
 Contains public sector information licensed under the Open Government Licence v3.0
-(DfT Street Manager). Powered by TfL Open Data. Not affiliated with or endorsed by
-the DfT or TfL.
+(DfT STATS19). Not affiliated with or endorsed by the DfT.

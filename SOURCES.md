@@ -2,47 +2,34 @@
 
 This project derives its forecasts from public open data. Raw third-party data
 is **not committed** to this repository — it is cited here and re-derived on
-demand from the sources below. The only data the repo stores is our own daily
-disruption snapshots (`data/raw/`, the canonical record for resolution) and our
-predictions/resolutions.
+demand from the sources below. The only data the repo stores is our own
+predictions and resolutions (the proof-of-commit record).
 
-## TfL Unified API — road disruption feed (forecast ground truth)
-
-- Endpoint: `https://api.tfl.gov.uk/Road/all/Disruption?stripContent=true`
-- Vocabularies: `/Road/Meta/Severities`, `/Road/Meta/Categories`
-- Used for: the realised disruption the forecast is scored against (accidents,
-  congestion, planned events and works as TfL reports them live), captured as
-  immutable daily snapshots.
-- Licence: TfL open data, a modified Open Government Licence. Attribution
-  required; this project is not affiliated with or endorsed by TfL.
-- Attribution: *Powered by TfL Open Data. Contains OS data © Crown copyright and
-  database rights. Geomni UK Map data © and database rights.*
-
-## DfT Street Manager — street works open data (planned-works covariate)
-
-- Archive (public, no registration): `https://opendata.manage-roadworks.service.gov.uk/{type}/{YYYY}/{MM}.zip`
-  (types: `permit`, `activity`, `section_58`; monthly, from 2020).
-- Used for: the planned and emergency roadworks pipeline — proposed/actual dates,
-  work category, traffic-management type — England-wide, filtered to London
-  highway authorities. The forward signal that makes a burden forecast valuable.
-- Licence: Open Government Licence v3.0 (Crown copyright).
-- Attribution: *Contains public sector information licensed under the Open
-  Government Licence v3.0 (DfT Street Manager).*
-
-## DfT STATS19 — road collision data (the unplanned/incident core)
+## DfT STATS19 — road collision data (the target and only ground truth)
 
 - Files (public, OGL v3.0): `https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-collision-{year}.csv`
-  and `...-collision-last-5-years.csv` — national, published annually, current to
-  the latest published year (~2023).
-- Used for: the genuinely-unplanned **accident burden** term — per-collision
-  records with British National Grid coordinates (same 2km cells as works),
-  `collision_severity` (Fatal/Serious/Slight) and date, filtered to London. No
-  forward "pipeline" exists for accidents — that is the point.
+  and `...-collision-last-5-years.csv` — national, published annually with a
+  ~1-year lag, current to the latest published year.
+- Used for: the road-safety rating's target — per-collision records with British
+  National Grid coordinates (binned to 1km cells), `collision_severity`
+  (Fatal/Serious/Slight; KSI = Fatal+Serious) and date, filtered to London. This
+  is the sole ground truth; predictions are settled against later releases.
 - Licence: Open Government Licence v3.0 (Crown copyright).
 - Attribution: *Contains public sector information licensed under the Open
   Government Licence v3.0 (DfT STATS19).*
 
-## DfT road traffic counts (AADF) — held for a future long-horizon marquee
+## DfT road traffic counts (AADF) — held for an exposure-adjusted rating
 
-- Annual modelled link-level counts; not used in the monthly forecast. Parked
-  per PLAN.md as a possible annual companion prediction.
+- Annual modelled link-level traffic counts. Not used in the v1 absolute rating;
+  parked per PLAN.md for the future exposure-adjusted ("safety vs busyness") rate,
+  i.e. collision risk per vehicle-km.
+- Licence: Open Government Licence v3.0 (Crown copyright).
+
+---
+
+*Historical note:* earlier versions of this project used the **TfL Unified API**
+road-disruption feed and the **DfT Street Manager** street-works archive to
+forecast roadworks-disruption burden. That direction was dropped (see PLAN.md):
+works are largely known in advance and have no measurable effect on the collision
+rate, and the TfL feed contains no collision data. Both sources have been removed
+from the codebase.
