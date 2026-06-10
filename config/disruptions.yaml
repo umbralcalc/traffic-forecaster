@@ -3,135 +3,105 @@
 # This file is the single source of truth for WHAT we forecast and HOW it is
 # scored. It is committed alongside predictions so the rules are provable to have
 # pre-dated the outcome. Numbers marked "provisional" may be tuned ONLY before the
-# first published prediction; after that they are frozen — changing them would
-# corrupt the back-history and break the honesty the project exists for.
+# first published prediction; afterwards they freeze — changing them corrupts the
+# back-history.
 #
-# Two distinct weightings live here, on two distinct data sources — do not
-# conflate them:
-#   * target.*      — computed from OUR TfL disruption snapshots. This is the
-#                     scored ground truth.
-#   * covariate.*   — computed from DfT Street Manager. Model INPUT only, never
-#                     the thing we score against.
+# Production target settled 2026-06-09: monthly ROADWORKS-disruption burden per
+# adaptive-resolution London unit, from DfT Street Manager. (Non-works incidents —
+# accidents, congestion — are a future v2 term from the TfL feed, which we keep
+# banking as daily snapshots; see PLAN.md and SOURCES.md.)
 
-version: 1
-status: draft            # draft until the first published month, then frozen
+version: 2
+status: draft # draft until the first published month, then frozen
 
 # ---------------------------------------------------------------------------
 # TARGET — the scored quantity
 # ---------------------------------------------------------------------------
 target:
-  name: disruption_burden
-  # Burden is a severity-weighted measure of how disrupted a borough is over a
-  # month, derived from the daily disruption snapshots (data/raw/*.json.gz).
-  source: tfl_disruption_feed
+  name: roadworks_disruption_burden
+  description: >
+    Traffic-management-weighted roadworks work-days per spatial unit per calendar
+    month (planned + emergency street works). This is ROADWORKS disruption, named
+    precisely — not all road disruption.
+  source: dft_street_manager # London permits; cited in SOURCES.md, never committed
 
-  granularity: borough   # primary. corridor is a secondary, UNSCORED view in v1.
-  # Scored entities = the 32 boroughs + City of London + TfL (TLRN). Correlated/
-  # overlapping entities (the TLRN crosses boroughs) are KEPT for now and may be
-  # dropped or merged later if they prove redundant — decided 2026-06-07.
-  scored_entities: boroughs_plus_city_and_tlrn
+  # Burden(unit, month) = sum over works active in the month of
+  #   traffic_management_weight(work) * days-the-work-is-active-within-the-month.
+  # Realised from each work's actual (else proposed) window; see internal/burden.
+  metric: tm_weighted_work_days
 
-  # Daily value for a borough = sum over disruptions present in that day's
-  # snapshot (attributed to the borough via its `location`) of the severity
-  # weight below. Presence-based, so it is robust to the feed's missing
-  # `created` field and to records being edited.
-  #
-  # Monthly burden = days_in_month * mean(daily value over the month's CAPTURED
-  # days). The mean-over-captured-days form degrades gracefully when a few daily
-  # snapshots are missing, rather than silently undercounting (see void_rule).
-  metric: days_in_month_times_mean_daily_weighted_presence
+  # Provisional traffic-management weights (kept in sync with burden.TMWeight).
+  traffic_management_weights:
+    "Road closure": 1.0
+    "Contra-flow": 0.8
+    "Lane closure": 0.6
+    "Multi-way signals": 0.6
+    "Two-way signals": 0.3
+    "Give and take": 0.3
+    "Priority working": 0.3
+    "Stop/go boards": 0.3
+    "Convoy workings": 0.3
+    "Some carriageway incursion": 0.2
+    "Temp obstruction 15 minute delay": 0.2
+    "No carriageway incursion": 0.05
+    _default: 0.3
+  emergency_categories_prefix: "Immediate" # splits emergency vs planned works
 
-  # Severity weights key off the TfL feed's `severity` DESCRIPTION (not the
-  # numeric level). Ordering follows internal/disruptions.SeverityRank; weights
-  # are provisional and monotone — closures dominate, minor works barely count.
-  severity_weights:        # provisional
-    # NOTE: this is a ONE-WAY map (category -> number) for building the scored
-    # scalar. Do NOT invert number -> category. 'Closure' is an INTERVENTION
-    # state, not a point on the delay ladder (Severe..Minimal), so the scale is
-    # not a true ordinal; and a closure propagates downstream as CONGESTION, never
-    # as another 'Closure'. See open_items + PLAN.md "network propagation" notes.
-    Closure: 1.0
-    Severe: 0.8
-    Serious: 0.6
-    Moderate: 0.3
-    Minimal: 0.1
-    "No Exceptional Delays": 0.0
-    "No Issues": 0.0
-    _default: 0.1          # unrecognised severities: treat as minor, never drop
-
-  # Optional discrete sub-target kept for the log-score regime (v1: report only).
-  sub_target:
-    name: serious_plus_active_count
-    definition: count of distinct disruptions active in the month with severity rank >= Serious
+  # ADAPTIVE spatial resolution: the busiest cells stay fine; the sparse remainder
+  # folds up to borough level so every unit has enough events to calibrate.
+  granularity:
+    scheme: adaptive_hybrid
+    cell_km: 2 # square British National Grid cells
+    dense_top_n: 150 # busiest N cells (by realised activity) kept as fine cells
+    rest_unit_suffix: " ·rest" # the rest of a borough pooled into one unit
+    # => ~183 units (150 fine cells + 33 borough-rests). A fine cell is assigned
+    # to its modal borough (boundary cells -> dominant borough; an approximation).
 
 # ---------------------------------------------------------------------------
-# RESOLUTION — how the target is settled from the record
+# MODEL — the predictive distribution (backtested offline on 6y of history)
+# ---------------------------------------------------------------------------
+model:
+  name: hier_spatial # internal/burdenmodel.SpatialFactorModel on hybrid units
+  description: >
+    A shared London common factor couples all units; a nearest-neighbour spatial
+    autoregression couples adjacent fine cells; the vintaged forward permit
+    pipeline is the central covariate. Emits a predictive ENSEMBLE per unit.
+  pipeline_covariate: true # forward permit book, vintaged by each work's filing
+  residual_window_months: 18 # trailing window (trend-aware) for calibration
+  ensemble_size: 200
+
+# ---------------------------------------------------------------------------
+# RESOLUTION — how the target is settled
 # ---------------------------------------------------------------------------
 resolution:
-  # A borough-month resolves from the daily snapshots dated within that month.
-  snapshot_settle_days: 14     # publish/score 14 days after month-end, to let
-                               # late-entered and retracted records settle.
-                               # PROVISIONAL: validate/lengthen via lifecycle-
-                               # churn EDA once snapshots accrue.
-  dedup_key: id                # distinct disruptions keyed on feed `id`.
-
-  void_rule:
-    # Burden integrates over daily presence, so a missing snapshot day biases
-    # every borough that day. If coverage is too low, VOID the month and publish
-    # the gap — never hide an outage, never impute over a large hole.
-    min_coverage: 0.80         # captured_days / days_in_month; below this -> void
-    scope: month               # a missing day affects all boroughs equally
+  source: dft_street_manager_monthly_archive
+  # A month's archive is published with ~1-month lag; resolve from the SETTLED
+  # archive (target month + a settle buffer) so late-entered/altered permits and
+  # actual start/stop events are in. Decide once; never change.
+  settle_buffer_days: 45
+  void_rule: void a unit-month if its monthly archive is missing or truncated
 
 # ---------------------------------------------------------------------------
 # SCORING
 # ---------------------------------------------------------------------------
 scoring:
   primary:
-    target: disruption_burden
-    rule: CRPS                 # continuous, non-negative; lower is better
-    aggregate: mean_over_borough_months
-  secondary:
-    target: serious_plus_active_count
-    rule: log_score            # discrete count; reported, not headline in v1
+    target: per_unit_burden
+    rule: CRPS
+    aggregate: mean_over_unit_months
+  joint:
+    target: london_total_burden # sum over units; rewards correct co-movement
+    rule: CRPS
   calibration:
-    method: PIT_histogram      # across all resolved borough-months to date
-
-# ---------------------------------------------------------------------------
-# COVARIATES — model inputs (NOT scored). See internal/burden, internal/streetmanager.
-# ---------------------------------------------------------------------------
-covariate:
-  street_manager:
-    source: dft_street_manager        # cited in SOURCES.md, never committed
-    # Works burden = traffic-management-weighted work-days per borough-month,
-    # split planned vs emergency by work_category ("Immediate*" = emergency).
-    # These weights MUST stay in sync with internal/burden.TMWeight until a
-    # config loader is wired in step 7.
-    traffic_management_weights:       # provisional
-      "Road closure": 1.0
-      "Contra-flow": 0.8
-      "Lane closure": 0.6
-      "Multi-way signals": 0.6
-      "Two-way signals": 0.3
-      "Give and take": 0.3
-      "Priority working": 0.3
-      "Stop/go boards": 0.3
-      "Convoy workings": 0.3
-      "Some carriageway incursion": 0.2
-      "Temp obstruction 15 minute delay": 0.2
-      "No carriageway incursion": 0.05
-      _default: 0.3
-    emergency_categories_prefix: "Immediate"
+    method: PIT_histogram # across all resolved unit-months to date
 
 # ---------------------------------------------------------------------------
 # OPEN ITEMS to settle before freezing (status: draft)
 # ---------------------------------------------------------------------------
 open_items:
-  - Calibrate severity_weights and traffic_management_weights against observed
-    TfL-feed burden once enough snapshots accrue.
-  - Reconcile borough naming between the TfL feed (`location` parse) and Street
-    Manager (highway_authority normalisation) — e.g. "Kensington & Chelsea".
-  - Confirm snapshot_settle_days (14) via lifecycle-churn EDA.
-  - If a network-propagation model is built (burden as a scalar field on the road
-    graph): carry the severity CATEGORY as a separate attribute, never recover it
-    from the scalar; model cause->effect transitions (closure -> congestion on
-    neighbours) rather than inverting severity_weights.
+  - Calibrate traffic_management_weights (currently provisional).
+  - dense_top_n=150 chosen from the detail-vs-calibration sweep (knee at ~150);
+    confirm before first publication.
+  - Boundary fine cells are assigned to their modal borough — revisit if material.
+  - v2: add the non-works incident term (accidents/congestion) from the TfL feed
+    once enough daily snapshots have accrued; reconcile borough naming then.
