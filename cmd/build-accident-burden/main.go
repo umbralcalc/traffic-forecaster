@@ -1,8 +1,14 @@
 // Command build-accident-burden streams the DfT STATS19 road-collision dataset,
-// filters to London, and writes a per-2km-cell monthly collision series — the
-// core of the road-safety-rating product. Each cell-month carries the all-severity
+// filters to London, and writes a per-cell monthly collision series — the core of
+// the road-safety-rating product. Each cell-month carries the all-severity
 // collision count and the KSI count (killed or seriously injured, the standard
 // road-safety tier); these are the Poisson targets the safety rating is built on.
+//
+// The cell size defaults to 1km: a resolution sweep (cmd/grid-sweep) showed the
+// hierarchical model's skill over a naive base-rate rises as cells get finer
+// (pooling beats sparse per-cell means), and 1km keeps strong skill and
+// calibration while staying robust to STATS19 geocoding precision.
+//
 // Output is derived external data: gitignored, cited in SOURCES.md.
 package main
 
@@ -52,7 +58,7 @@ func isKSI(code string) bool { return code == "1" || code == "2" }
 func main() {
 	url := flag.String("url", defaultURL, "STATS19 collision CSV URL")
 	out := flag.String("out", filepath.Join("data", "incidents", "accident-burden.csv"), "output CSV path")
-	cellKm := flag.Float64("cell-km", 2.0, "grid cell size in km")
+	cellKm := flag.Float64("cell-km", 1.0, "grid cell size in km")
 	timeout := flag.Duration("timeout", 20*time.Minute, "overall deadline")
 	flag.Parse()
 	if err := run(*url, *out, *cellKm*1000, *timeout); err != nil {
