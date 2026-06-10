@@ -328,7 +328,13 @@ the fact that severity is not a clean ordinal:
    cross-borough structure is common-mode, confirmed by a pre-build signal check).
    **#7 done.** NB the backtest is against the Street-Manager works proxy; the
    live scored target (TfL-feed burden) accrues from snapshots.
-8. ⏭ `cmd/forecast` + `cmd/resolve` (the monthly heartbeat).
+8. ✅ **`cmd/forecast` + `cmd/resolve`** (the monthly heartbeat) on the production
+   target (works burden, hybrid n150, hier-spatial; `internal/series` loader).
+   forecast commits a per-unit predictive ensemble + London total to
+   `data/predictions/{month}.json`; resolve scores it against the settled
+   realised burden into `data/resolutions/{month}.json`. Loop demonstrated
+   (2026-05: per-unit CRPS 17.4, total CRPS 502). *First OFFICIAL prediction
+   waits until the config is frozen (weights + dense-N confirmed).*
 9. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot.
 10. ⏭ First published month: predictions only; honest "the calibration curve is
     noise until it isn't" framing from the outset.
