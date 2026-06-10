@@ -28,17 +28,18 @@ func main() {
 	cellKm := flag.Float64("cell-km", 0, "if >0, treat entities as grid cells and use grid adjacency")
 	maxEntities := flag.Int("max-entities", 0, "keep only the N busiest entities (0 = all)")
 	noPipeline := flag.Bool("no-pipeline", false, "no forward covariate (e.g. accidents): forecast base rate + structure")
+	seasonal := flag.Bool("seasonal", false, "also score a seasonal-baseline variant of the spatial model")
 	lastRealised := flag.String("last-realised", "2026-05", "last fully-realised month, YYYY-MM (forward tail excluded)")
 	minHistory := flag.Int("min-history", 13, "months of history required before scoring a point")
 	flag.Parse()
 
-	if err := run(*in, *col, *entity, *cellKm, *maxEntities, *noPipeline, *lastRealised, *minHistory); err != nil {
+	if err := run(*in, *col, *entity, *cellKm, *maxEntities, *noPipeline, *seasonal, *lastRealised, *minHistory); err != nil {
 		fmt.Fprintln(os.Stderr, "backtest:", err)
 		os.Exit(1)
 	}
 }
 
-func run(in, col, entity string, cellKm float64, maxEntities int, noPipeline bool, lastRealised string, minHistory int) error {
+func run(in, col, entity string, cellKm float64, maxEntities int, noPipeline, seasonal bool, lastRealised string, minHistory int) error {
 	series, group, entities, months, err := loadSeries(in, col, entity, lastRealised, maxEntities)
 	if err != nil {
 		return err
@@ -95,6 +96,15 @@ func run(in, col, entity string, cellKm float64, maxEntities int, noPipeline boo
 	lap("joint common (marginal)")
 	results = append(results, forecast.BacktestJoint(series, spatial(100), minHistory))
 	lap("joint spatial (marginal)")
+	spatialSeasonal := func(n int) burdenmodel.SpatialFactorModel {
+		s := spatial(n)
+		s.Seasonal = true
+		return s
+	}
+	if seasonal {
+		results = append(results, forecast.BacktestJoint(series, spatialSeasonal(100), minHistory))
+		lap("joint spatial+seasonal (marginal)")
+	}
 	nested := func(n int) burdenmodel.NestedFactorModel {
 		return burdenmodel.NestedFactorModel{ResidualK: 18, N: n, FallbackK: 12, Seed: 1, Group: group, Adjacency: adjacency}
 	}
@@ -125,6 +135,10 @@ func run(in, col, entity string, cellKm float64, maxEntities int, noPipeline boo
 		forecast.IndependentJoint{Model: indepModel, N: 200, Seed: 1}, minHistory)
 	lap("total independent")
 	totals := []forecast.ModelResult{totSpatial, totCommon, totIndep}
+	if seasonal {
+		totals = append(totals, forecast.BacktestJointTotal(series, spatialSeasonal(200), minHistory))
+		lap("total spatial+seasonal")
+	}
 	if len(group) > 0 {
 		totals = append(totals, forecast.BacktestJointTotal(series, nested(200), minHistory))
 		lap("total nested")

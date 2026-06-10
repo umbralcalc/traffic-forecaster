@@ -189,6 +189,37 @@ func TestSpatialFactorModelNoPipeline(t *testing.T) {
 	}
 }
 
+func TestSpatialFactorModelSeasonal(t *testing.T) {
+	// Units with a strong January spike (≈100) vs ≈10 otherwise. Forecasting a
+	// January must centre near 100 (the seasonal level), not the flat mean (~17).
+	mk := func() []forecast.Point {
+		var pts []forecast.Point
+		for y := 2022; y <= 2025; y++ {
+			for mo := 1; mo <= 12; mo++ {
+				v := 10.0
+				if mo == 1 {
+					v = 100.0
+				}
+				pts = append(pts, forecast.Point{Year: y, Month: mo, Value: v})
+			}
+		}
+		return pts
+	}
+	histories := map[string][]forecast.Point{"A": mk(), "B": mk(), "C": mk()}
+	targets := map[string]forecast.Point{
+		"A": {Year: 2026, Month: 1}, "B": {Year: 2026, Month: 1}, "C": {Year: 2026, Month: 1},
+	}
+	m := SpatialFactorModel{ResidualK: 0, N: 64, FallbackK: 6, Seed: 1, NoPipeline: true, Seasonal: true}
+	out := m.PredictAll(histories, targets)
+	var sum float64
+	for _, v := range out["A"] {
+		sum += v
+	}
+	if mean := sum / float64(len(out["A"])); math.Abs(mean-100) > 20 {
+		t.Errorf("January forecast mean = %.1f, want ~100 (seasonal level)", mean)
+	}
+}
+
 func TestSpatialFactorModelShapeAndFallback(t *testing.T) {
 	m := SpatialFactorModel{ResidualK: 18, N: 32, FallbackK: 6, Seed: 1}
 	histories := map[string][]forecast.Point{}

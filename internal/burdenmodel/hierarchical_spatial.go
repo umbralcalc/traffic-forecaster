@@ -26,6 +26,10 @@ type SpatialFactorModel struct {
 	// the central estimate is the per-unit base rate plus the common/spatial
 	// structure, and units gate on history length rather than pipeline presence.
 	NoPipeline bool
+	// Seasonal (with NoPipeline) uses each unit's calendar-month mean as the
+	// central forecast and models the seasonally-adjusted residual — so the
+	// central estimate is the month-of-year base rate, not a flat mean.
+	Seasonal bool
 }
 
 func (m SpatialFactorModel) adjacency() map[string][]string {
@@ -35,7 +39,12 @@ func (m SpatialFactorModel) adjacency() map[string][]string {
 	return boroughAdjacency
 }
 
-func (SpatialFactorModel) Name() string { return "hier-spatial" }
+func (m SpatialFactorModel) Name() string {
+	if m.Seasonal {
+		return "hier-spatial+seasonal"
+	}
+	return "hier-spatial"
+}
 
 func (m SpatialFactorModel) PredictAll(
 	histories map[string][]forecast.Point,
@@ -47,6 +56,13 @@ func (m SpatialFactorModel) PredictAll(
 		n = 100
 	}
 
+	var targetMo int
+	for _, t := range targets {
+		targetMo = t.Month
+		break
+	}
+	seasonalLevel := map[string]float64{} // unit -> central forecast for the target month
+
 	resid := map[string]map[int]float64{}
 	var modeled []string
 	for b, hist := range histories {
@@ -55,15 +71,32 @@ func (m SpatialFactorModel) PredictAll(
 		if !m.NoPipeline && targets[b].Pipeline <= 0 {
 			continue
 		}
+		var seasonal map[int]float64
+		var overall float64
+		if m.Seasonal {
+			seasonal, overall = monthlyMeans(hist)
+		}
 		rm := map[int]float64{}
 		for _, p := range hist {
-			if m.NoPipeline || p.Pipeline > 0 {
+			if !(m.NoPipeline || p.Pipeline > 0) {
+				continue
+			}
+			if m.Seasonal {
+				rm[p.Year*12+p.Month-1] = p.Value - seasonal[p.Month]
+			} else {
 				rm[p.Year*12+p.Month-1] = p.Value - p.Pipeline
 			}
 		}
 		if len(rm) >= 6 {
 			resid[b] = rm
 			modeled = append(modeled, b)
+			if m.Seasonal {
+				if v, ok := seasonal[targetMo]; ok {
+					seasonalLevel[b] = v
+				} else {
+					seasonalLevel[b] = overall
+				}
+			}
 		}
 	}
 	sort.Strings(modeled)
@@ -74,6 +107,13 @@ func (m SpatialFactorModel) PredictAll(
 
 	if len(modeled) >= 3 && len(months) >= 4 {
 		d := decompose(resid, modeled, months, targets)
+		if m.Seasonal {
+			// Central forecast = the target month's seasonal base rate (the
+			// residual was already demeaned by it, so factors are zero-mean).
+			for i, u := range modeled {
+				d.baseline[i] = seasonalLevel[u]
+			}
+		}
 		// Sparse spatial autoregression over the neighbour graph — no dense
 		// inverse, so it scales to the full grid (hundreds of cells).
 		nbrs := buildNeighbours(modeled, m.adjacency())
@@ -167,6 +207,28 @@ func GridAdjacency(cells []string) map[string][]string {
 // sarIters is the number of fixed-point iterations to solve (I − spill·W)s = eps.
 // With spill ≤ 0.85 and a row-stochastic W, the error decays like spill^iters.
 const sarIters = 64
+
+// monthlyMeans returns each calendar-month's mean value over the history and the
+// overall mean (fallback for months with no history).
+func monthlyMeans(hist []forecast.Point) (map[int]float64, float64) {
+	sum := map[int]float64{}
+	cnt := map[int]int{}
+	var all float64
+	for _, p := range hist {
+		sum[p.Month] += p.Value
+		cnt[p.Month]++
+		all += p.Value
+	}
+	means := make(map[int]float64, len(sum))
+	for mo, s := range sum {
+		means[mo] = s / float64(cnt[mo])
+	}
+	overall := 0.0
+	if len(hist) > 0 {
+		overall = all / float64(len(hist))
+	}
+	return means, overall
+}
 
 // buildNeighbours returns, per modeled entity, the indices of its neighbours
 // that are present in the set (a sparse adjacency).
