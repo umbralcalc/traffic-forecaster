@@ -4,16 +4,16 @@ import (
 	"math"
 	"testing"
 
-	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
+	"github.com/umbralcalc/traffic-forecaster/internal/series"
 )
 
 // monthly builds a 5-year history for a cell from a per-calendar-month rate, with
 // the same count every year (deterministic, so estimates are exact).
-func monthly(rate map[int]float64) []forecast.Point {
-	var pts []forecast.Point
+func monthly(rate map[int]float64) []series.Point {
+	var pts []series.Point
 	for y := 2020; y <= 2024; y++ {
 		for mo := 1; mo <= 12; mo++ {
-			pts = append(pts, forecast.Point{Year: y, Month: mo, Value: rate[mo]})
+			pts = append(pts, series.Point{Year: y, Month: mo, Value: rate[mo]})
 		}
 	}
 	return pts
@@ -29,7 +29,7 @@ func flat(v float64) map[int]float64 {
 
 func TestRatingFallsWithRate(t *testing.T) {
 	// A quiet cell (0.1/month) should rate far safer than a busy one (5/month).
-	hist := map[string][]forecast.Point{
+	hist := map[string][]series.Point{
 		"quiet": monthly(flat(0.1)),
 		"busy":  monthly(flat(5.0)),
 	}
@@ -48,7 +48,7 @@ func TestRatingFallsWithRate(t *testing.T) {
 
 func TestExpectedRecoversBaseRate(t *testing.T) {
 	// With a flat 2.0/month rate and no shared variance, expected count ~ 2.0.
-	hist := map[string][]forecast.Point{"a": monthly(flat(2.0)), "b": monthly(flat(2.0))}
+	hist := map[string][]series.Point{"a": monthly(flat(2.0)), "b": monthly(flat(2.0))}
 	out := PoissonFactorModel{N: 4000, Seed: 7}.PredictAll(hist, 2025, 3)
 	if e := out["a"].Expected; math.Abs(e-2.0) > 0.2 {
 		t.Errorf("expected count = %.3f, want ~2.0", e)
@@ -59,7 +59,7 @@ func TestSeasonalLowersWinterRating(t *testing.T) {
 	// Strong winter peak (Dec=10, else 1). December must rate worse than July.
 	rate := flat(1.0)
 	rate[12] = 10.0
-	hist := map[string][]forecast.Point{"x": monthly(rate), "y": monthly(rate)}
+	hist := map[string][]series.Point{"x": monthly(rate), "y": monthly(rate)}
 	m := PoissonFactorModel{N: 3000, Seed: 3}
 	dec := m.PredictAll(hist, 2025, 12)["x"]
 	jul := m.PredictAll(hist, 2025, 7)["x"]
@@ -74,17 +74,17 @@ func TestSeasonalLowersWinterRating(t *testing.T) {
 func TestSharedFactorCouplesCells(t *testing.T) {
 	// Two cells whose monthly totals move together year-on-year create a non-zero
 	// shared factor; their predictive ensembles must be positively correlated.
-	mk := func() []forecast.Point {
-		var pts []forecast.Point
+	mk := func() []series.Point {
+		var pts []series.Point
 		for y := 2020; y <= 2024; y++ {
 			level := 2.0 + 3.0*float64((y-2020)%2) // alternating good/bad London years
 			for mo := 1; mo <= 12; mo++ {
-				pts = append(pts, forecast.Point{Year: y, Month: mo, Value: level})
+				pts = append(pts, series.Point{Year: y, Month: mo, Value: level})
 			}
 		}
 		return pts
 	}
-	hist := map[string][]forecast.Point{"a": mk(), "b": mk()}
+	hist := map[string][]series.Point{"a": mk(), "b": mk()}
 	out := PoissonFactorModel{N: 4000, Seed: 5}.PredictAll(hist, 2025, 6)
 	a := intsToFloat(out["a"].Ensemble)
 	b := intsToFloat(out["b"].Ensemble)
@@ -96,18 +96,18 @@ func TestSharedFactorCouplesCells(t *testing.T) {
 func TestRatingExceedsNaiveUnderOverdispersion(t *testing.T) {
 	// Jensen: with a shared factor, E[exp(-lambda)] >= exp(-E[lambda]). The rating
 	// should be at least the naive Poisson rating from the mean intensity.
-	mk := func() []forecast.Point {
-		var pts []forecast.Point
+	mk := func() []series.Point {
+		var pts []series.Point
 		for y := 2020; y <= 2024; y++ {
 			level := 1.0 + 4.0*float64((y-2020)%2)
 			for mo := 1; mo <= 12; mo++ {
-				pts = append(pts, forecast.Point{Year: y, Month: mo, Value: level})
+				pts = append(pts, series.Point{Year: y, Month: mo, Value: level})
 			}
 		}
 		return pts
 	}
 	out := PoissonFactorModel{N: 8000, Seed: 9}.PredictAll(
-		map[string][]forecast.Point{"a": mk(), "b": mk()}, 2025, 6)["a"]
+		map[string][]series.Point{"a": mk(), "b": mk()}, 2025, 6)["a"]
 	naive := math.Exp(-out.Expected)
 	if out.Rating < naive-0.02 {
 		t.Errorf("rating %.3f below naive %.3f — overdispersion should raise it", out.Rating, naive)

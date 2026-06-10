@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/umbralcalc/traffic-forecaster/internal/burden"
+	"github.com/umbralcalc/traffic-forecaster/internal/grid"
 )
 
 // DfT STATS19 collision file (OGL v3.0). The "last-5-years" file is a single
@@ -97,7 +97,7 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 		ksi      int
 		weighted float64
 	}
-	grid := map[string]map[string]*cell{}
+	byCell := map[string]map[string]*cell{}
 	var total, london int
 	for {
 		rec, err := r.Read()
@@ -116,11 +116,11 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 		}
 		w := severityWeight(rec[si])
 		london++
-		cid := burden.CellID(e, n, cellM)
-		bm := grid[cid]
+		cid := grid.CellID(e, n, cellM)
+		bm := byCell[cid]
 		if bm == nil {
 			bm = map[string]*cell{}
-			grid[cid] = bm
+			byCell[cid] = bm
 		}
 		c := bm[month]
 		if c == nil {
@@ -152,7 +152,7 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 	// model needs those zeros. The observed-month set is the contiguous range,
 	// since London as a whole has collisions every month.
 	monthSet := map[string]bool{}
-	for _, bm := range grid {
+	for _, bm := range byCell {
 		for month := range bm {
 			monthSet[month] = true
 		}
@@ -162,15 +162,15 @@ func run(url, out string, cellM float64, timeout time.Duration) error {
 		months = append(months, m)
 	}
 	sort.Strings(months)
-	cells := make([]string, 0, len(grid))
-	for cid := range grid {
+	cells := make([]string, 0, len(byCell))
+	for cid := range byCell {
 		cells = append(cells, cid)
 	}
 	sort.Strings(cells)
 
 	var rows int
 	for _, cid := range cells {
-		bm := grid[cid]
+		bm := byCell[cid]
 		for _, month := range months {
 			c := bm[month]
 			if c == nil {

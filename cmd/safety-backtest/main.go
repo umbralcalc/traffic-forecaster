@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
 	"github.com/umbralcalc/traffic-forecaster/internal/safety"
 	"github.com/umbralcalc/traffic-forecaster/internal/scoring"
 	"github.com/umbralcalc/traffic-forecaster/internal/series"
@@ -89,11 +88,11 @@ func run(in, col string, minHistory, histK, n int) error {
 		ty, tm := target/12, target%12+1
 
 		// Split: history strictly before the target month; realised at the target.
-		hist := map[string][]forecast.Point{}
+		hist := map[string][]series.Point{}
 		realised := map[string]int{}
 		var poolSum, poolN float64
 		for cell, pts := range panel {
-			var h []forecast.Point
+			var h []series.Point
 			for _, p := range pts {
 				k := p.Year*12 + p.Month - 1
 				switch {

@@ -23,7 +23,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
+	"github.com/umbralcalc/traffic-forecaster/internal/series"
 )
 
 // Prediction is the per-cell predictive summary for one target month.
@@ -48,7 +48,7 @@ func (m PoissonFactorModel) Name() string { return "poisson-factor" }
 // PredictAll fits on the supplied per-cell histories (counts in Point.Value) and
 // returns the predictive distribution for target month (ty, tm).
 func (m PoissonFactorModel) PredictAll(
-	histories map[string][]forecast.Point, ty, tm int,
+	histories map[string][]series.Point, ty, tm int,
 ) map[string]Prediction {
 	n := m.N
 	if n <= 0 {
@@ -79,7 +79,7 @@ func (m PoissonFactorModel) PredictAll(
 			cutoff = months[len(months)-m.HistK]
 		}
 	}
-	inWindow := func(p forecast.Point) bool { return p.Year*12+p.Month-1 >= cutoff }
+	inWindow := func(p series.Point) bool { return p.Year*12+p.Month-1 >= cutoff }
 
 	// --- stage 1: pooled month-of-year seasonal multiplier (mean 1) ---
 	moSum := map[int]float64{}

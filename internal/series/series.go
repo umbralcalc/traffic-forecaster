@@ -1,7 +1,6 @@
-// Package series loads a burden CSV (as written by the build-*-burden commands)
-// into the per-entity Point series the forecaster consumes. Unlike the backtest
-// loader it keeps ALL months, including the forward-pipeline tail, so a forecast
-// can read the target month's known pipeline.
+// Package series loads a per-cell monthly panel CSV (as written by
+// cmd/build-accident-burden) into the per-entity Point series the safety model
+// consumes. It keeps ALL months in the file.
 package series
 
 import (
@@ -9,20 +8,24 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-
-	"github.com/umbralcalc/traffic-forecaster/internal/forecast"
 )
 
-// Loaded is a burden series plus the unit→borough grouping (when a borough
+// Point is one entity-month observation: a value (e.g. a collision count) at a
+// calendar month.
+type Point struct {
+	Year, Month int
+	Value       float64
+}
+
+// Loaded is a panel keyed by entity plus the unit→group label (when a "borough"
 // column is present).
 type Loaded struct {
-	Series map[string][]forecast.Point
+	Series map[string][]Point
 	Group  map[string]string
 }
 
-// Load reads the CSV at path, taking valueCol as the burden value and entityCol
-// as the spatial unit. It also reads pipeline_weighted_days / planned_days /
-// emergency_days and an optional borough column when present.
+// Load reads the CSV at path, taking valueCol as the observed value and entityCol
+// as the spatial unit, plus an optional borough column when present.
 func Load(path, valueCol, entityCol string) (*Loaded, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -46,7 +49,7 @@ func Load(path, valueCol, entityCol string) (*Loaded, error) {
 	}
 	boroughCol, hasBorough := idx["borough"]
 
-	out := &Loaded{Series: map[string][]forecast.Point{}, Group: map[string]string{}}
+	out := &Loaded{Series: map[string][]Point{}, Group: map[string]string{}}
 	for {
 		rec, err := r.Read()
 		if err != nil {
@@ -64,12 +67,7 @@ func Load(path, valueCol, entityCol string) (*Loaded, error) {
 		if hasBorough && boroughCol < len(rec) {
 			out.Group[ent] = rec[boroughCol]
 		}
-		out.Series[ent] = append(out.Series[ent], forecast.Point{
-			Year: y, Month: m, Value: v,
-			Pipeline:  optFloat(rec, idx, "pipeline_weighted_days"),
-			Planned:   optFloat(rec, idx, "planned_days"),
-			Emergency: optFloat(rec, idx, "emergency_days"),
-		})
+		out.Series[ent] = append(out.Series[ent], Point{Year: y, Month: m, Value: v})
 	}
 	return out, nil
 }
@@ -88,12 +86,4 @@ func ParseMonth(s string) (year, month int, err error) {
 		return 0, 0, fmt.Errorf("bad month %q", s)
 	}
 	return y, m, nil
-}
-
-func optFloat(rec []string, idx map[string]int, name string) float64 {
-	if ci, ok := idx[name]; ok && ci < len(rec) {
-		v, _ := strconv.ParseFloat(rec[ci], 64)
-		return v
-	}
-	return 0
 }
