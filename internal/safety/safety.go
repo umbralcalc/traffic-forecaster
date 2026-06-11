@@ -45,10 +45,16 @@ type PoissonFactorModel struct {
 	HistK    int     // trailing months used for the level/anomaly (0 = all history)
 	ShrinkA  float64 // pseudo-exposure shrinking each cell's base toward its prior
 	SpatialR int     // neighbourhood radius (cells) for the spatial prior; 0 = global pool
+	// SpatialDecay is the Gaussian bandwidth (in cells) for weighting neighbours by
+	// distance within the radius; 0 = uniform box (every neighbour weighted equally).
+	SpatialDecay float64
 }
 
 func (m PoissonFactorModel) Name() string {
 	if m.SpatialR > 0 {
+		if m.SpatialDecay > 0 {
+			return fmt.Sprintf("poisson-factor+sp(r%d,a%g,d%g)", m.SpatialR, m.shrink(), m.SpatialDecay)
+		}
 		return fmt.Sprintf("poisson-factor+sp(r%d,a%g)", m.SpatialR, m.shrink())
 	}
 	return "poisson-factor"
@@ -145,7 +151,7 @@ func (m PoissonFactorModel) PredictAll(
 	// a sparse cell ringed by busy roads is lifted); otherwise the global pool.
 	prior := make(map[string]float64, len(histories))
 	if m.SpatialR > 0 {
-		prior = neighbourPriors(cnt, seasExp, m.SpatialR, overall)
+		prior = neighbourPriors(cnt, seasExp, m.SpatialR, m.SpatialDecay, overall)
 	} else {
 		for cell := range histories {
 			prior[cell] = overall
@@ -216,8 +222,11 @@ func (m PoissonFactorModel) PredictAll(
 // over its Chebyshev-radius-r neighbours (excluding itself): summed neighbour
 // counts over summed neighbour seasonal exposure. Pooling counts (not averaging
 // per-cell rates) is the Gamma-Poisson local rate — busier neighbours carry more
-// information. Cells with no observed neighbours fall back to the global rate.
-func neighbourPriors(cnt, seasExp map[string]float64, r int, fallback float64) map[string]float64 {
+// information. With decay>0 each neighbour is weighted by a Gaussian of its
+// Euclidean distance (bandwidth `decay` cells) so nearer cells count for more;
+// decay=0 is a uniform box. Cells with no observed neighbours fall back to the
+// global rate.
+func neighbourPriors(cnt, seasExp map[string]float64, r int, decay, fallback float64) map[string]float64 {
 	type ij struct{ i, j int }
 	coord := make(map[string]ij, len(cnt))
 	present := make(map[ij]string, len(cnt))
@@ -242,10 +251,17 @@ func neighbourPriors(cnt, seasExp map[string]float64, r int, fallback float64) m
 				if di == 0 && dj == 0 {
 					continue
 				}
-				if nb, ok := present[ij{c.i + di, c.j + dj}]; ok {
-					sc += cnt[nb]
-					se += seasExp[nb]
+				nb, ok := present[ij{c.i + di, c.j + dj}]
+				if !ok {
+					continue
 				}
+				w := 1.0
+				if decay > 0 {
+					d2 := float64(di*di + dj*dj)
+					w = math.Exp(-d2 / (2 * decay * decay))
+				}
+				sc += w * cnt[nb]
+				se += w * seasExp[nb]
 			}
 		}
 		if se > 0 {

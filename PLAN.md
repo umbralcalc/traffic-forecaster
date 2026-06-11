@@ -193,8 +193,18 @@ that justifies pushing to 0.5km.
   doesn't help, so it stays at R0. The sparse **KSI** tier benefits clearly at
   **R2, a20** — logloss 0.2848→0.2777, Poisson deviance 0.448→0.433, calibration
   0.008→0.004 — and the gain holds out-of-sample (held-out 2024). `cmd/forecast`
-  applies the per-tier models. NEXT under A: distance-decay kernel + revisit
-  0.5km now that sparse cells borrow strength.
+  applies the per-tier models.
+- ✅ **A′. Distance-decay kernel + 0.5km revisit — done; production stays at 1km.**
+  *Decay kernel* (`SpatialDecay`, Gaussian-by-distance neighbour weighting): **null**
+  at 1km KSI (logloss 0.2777→0.2775, within noise) — the Gamma-Poisson shrinkage
+  already down-weights; kept as a dormant option. *0.5km*: smoothing makes the fine
+  grid calibration-viable (KSI R4 a20 → cal 0.006→0.002, higher raw skill), and
+  STATS19 geocoding is fine at 500m — but the cross-resolution choice can't rest on
+  proper scores (base-rate artifact), and with a ~2km smoothing bandwidth 0.5km
+  largely *upsamples the same surface* at 4× the cells (8,532, mostly empty). So
+  **1km stays the modelling unit**; the effective spatial resolution is set by the
+  smoothing bandwidth (~1–2km), which 1km cells already sample. 0.5km remains a
+  future high-res-display option.
 - **B. `f_t` as a latent stochastic process (the stochadex fit).** Replace the iid
   `f_t ~ N(0,σ)` with an AR(1)/OU/random-walk Iteration → a state-space /
   log-Gaussian Cox process. Gives momentum, trend, **multi-horizon forecasts**

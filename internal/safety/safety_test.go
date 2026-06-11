@@ -145,6 +145,22 @@ func TestSpatialPriorLiftsZeroCellNearBusyNeighbours(t *testing.T) {
 	}
 }
 
+func TestSpatialDecayWeightsNearNeighboursMore(t *testing.T) {
+	// Target cell with a busy neighbour at distance 1 and quiet cells at distance 3.
+	// A uniform box averages them all; a distance-decay kernel emphasises the near
+	// busy cell, so the borrowed prior (and the expected count) is higher.
+	hist := map[string][]series.Point{"20_20": monthly(flat(0.0))}
+	hist["21_20"] = monthly(flat(10.0)) // busy, distance 1
+	for _, c := range []string{"23_20", "17_20", "20_23", "20_17"} {
+		hist[c] = monthly(flat(0.0)) // quiet, distance 3
+	}
+	uniform := PoissonFactorModel{N: 4000, Seed: 1, SpatialR: 3, ShrinkA: 20}.PredictAll(hist, 2025, 6)["20_20"]
+	decay := PoissonFactorModel{N: 4000, Seed: 1, SpatialR: 3, ShrinkA: 20, SpatialDecay: 1}.PredictAll(hist, 2025, 6)["20_20"]
+	if decay.Expected <= uniform.Expected {
+		t.Errorf("decay expected %.3f should exceed uniform %.3f (near busy cell weighted more)", decay.Expected, uniform.Expected)
+	}
+}
+
 func intsToFloat(xs []int) []float64 {
 	out := make([]float64, len(xs))
 	for i, x := range xs {
