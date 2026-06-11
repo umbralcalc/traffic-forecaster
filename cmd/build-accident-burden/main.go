@@ -38,7 +38,7 @@ const (
 )
 
 // severityWeight maps STATS19 collision_severity (1=Fatal,2=Serious,3=Slight) to
-// a provisional weight (kept for the optional weighted column / dashboards).
+// a provisional weight (kept for the optional weighted column).
 func severityWeight(code string) float64 {
 	switch code {
 	case "1":

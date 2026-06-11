@@ -96,12 +96,6 @@ internal/
 data/predictions/         committed forward ratings (the proof-of-commit record)
 ```
 
-## Not built (deliberately)
-
-A dashboard. The model is validated and the calibration record is in `data/`; a
-front-end was descoped to keep this an honest modelling side-project rather than a
-product.
-
 ## Attribution
 
 Contains public sector information licensed under the Open Government Licence v3.0
