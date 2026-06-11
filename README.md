@@ -8,7 +8,7 @@ This is a finished side-project. It reached a clear, honest conclusion — a
 well-calibrated model at the structural ceiling of what the data supports — and is
 parked there rather than dressed up. The methodology and, just as much, **what we
 learned by ruling things out** are the deliverable. Data sources and licences are
-in [`SOURCES.md`](SOURCES.md); the full design history is in [`PLAN.md`](PLAN.md).
+in [`SOURCES.md`](SOURCES.md).
 
 ## What it forecasts
 
@@ -100,7 +100,7 @@ data/predictions/         committed forward ratings (the proof-of-commit record)
 
 A dashboard. The model is validated and the calibration record is in `data/`; a
 front-end was descoped to keep this an honest modelling side-project rather than a
-product. See [`PLAN.md`](PLAN.md) for the full rationale and history.
+product.
 
 ## Attribution
 

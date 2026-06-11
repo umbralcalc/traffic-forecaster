@@ -22,7 +22,7 @@ predictions and resolutions (the proof-of-commit record).
 
 - Annual modelled link-level traffic counts (region files at
   `storage.googleapis.com/dft-statistics/road-traffic/downloads/aadf/region_id/`).
-- Evaluated as an exposure covariate and dropped (see PLAN.md): only ~27% of London
+- Evaluated as an exposure covariate and dropped: only ~27% of London
   cells have a count point, the signal is confounded (high-flow motorways have *low*
   collision density), and 5 years of per-cell history already captures the rate. Not
   part of the model.
@@ -32,14 +32,14 @@ predictions and resolutions (the proof-of-commit record).
 
 - LTN locations + implementation dates (GeoJSON): used to test whether road-safety
   interventions are a forward-causal covariate. An event-study showed the apparent
-  effect was siting selection, not causation (see PLAN.md), so it is not in the model.
+  effect was siting selection, not causation, so it is not in the model.
 - Source: https://blog.westminster.ac.uk/ata/projects/london-ltn-dataset/
 
 ---
 
 *Historical note:* earlier versions of this project used the **TfL Unified API**
 road-disruption feed and the **DfT Street Manager** street-works archive to
-forecast roadworks-disruption burden. That direction was dropped (see PLAN.md):
+forecast roadworks-disruption burden. That direction was dropped:
 works are largely known in advance and have no measurable effect on the collision
 rate, and the TfL feed contains no collision data. Both sources have been removed
 from the codebase.
