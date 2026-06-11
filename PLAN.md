@@ -1,12 +1,17 @@
 # traffic-forecaster — Repo Plan
 
-A monthly, honestly-scored **London road-safety rating**, published as a frozen
-interactive dashboard. Single repo, Go + stochadex.
+A monthly, honestly-scored **London road-safety rating**. Single repo, Go.
 
-> **Status (2026-06-10).** Major reframe. The project is no longer about
-> *roadworks-disruption burden*; it now forecasts **road collisions** and
-> publishes them as a public **road-safety rating**. The works/disruption
-> pipeline has been removed. This document supersedes the burden plan.
+> **Status (2026-06-11) — closed out.** Finished as a side-project: a
+> well-calibrated model at the structural ceiling of the data, validated
+> out-of-sample, with a forward prediction committed. The dashboard was descoped
+> and stochadex was *not* used (no covariate justified the complexity). See
+> **Outcome** at the bottom for where it landed and why. The body below is the
+> design history.
+>
+> Earlier reframe (2026-06-10): the project pivoted from *roadworks-disruption
+> burden* to forecasting **road collisions** as a road-safety rating; the
+> works/disruption pipeline was removed.
 
 ## What changed (and why)
 
@@ -172,11 +177,11 @@ jointly-coherent ensembles.
 7. ✅ Pruned the dead works/TfL pipeline; slimmed internals to the safety product.
 8. ✅ `cmd/forecast` + `cmd/resolve` — the forward commit/resolve loop; committed a
    genuine-forward 2025 prediction.
-9. ⏭ **Q4 model enhancements** (agreed; see roadmap below).
-10. ⏭ `cmd/build-dashboard` + first frozen R2 snapshot (with cell→borough/road
-    aggregation for public presentation).
-11. ⏭ First published month: ratings only; honest "the calibration curve is noise
-    until it isn't" framing from the outset.
+9. ✅ **Model enhancements** — spatial smoothing (A) and AR(1) factor (B) landed;
+   everything else investigated and ruled out (see roadmap below).
+10. ⛔ `cmd/build-dashboard` — **descoped.** Closed out as a modelling side-project;
+    the calibration record lives in `data/`, no front-end.
+11. ⛔ First published month — **not pursued** (no dashboard).
 
 ---
 
@@ -214,28 +219,54 @@ that justifies pushing to 0.5km.
   144→118 (accidents) / 28→23 (KSI), ~16–18% better, coverage held; plus honest
   **multi-horizon** fan-out (near-term tight, relaxing to unconditional). On in
   production for both tiers (`+ar1`). **stochadex call:** a *scalar* AR(1) is ~15
-  lines — wiring the framework around it buys nothing. stochadex earns its place at
-  the next step: a **spatio-temporal latent field** (fuse A's spatial smoothing with
-  B's dynamics into a Cox process simulated forward) — that's where the width-N
-  vectorised-iteration pattern pays off.
-- **C. Exposure (DfT AADF)** → rate per vehicle-km: the "safety vs busyness"
-  distinction. Needs the AADF join; makes the rating about danger, not traffic.
-- **D. Road-network static features (OS/OSM):** junction density, road-class mix —
-  a generalisable base-rate prior (helps cells with little history). Overlaps A.
+  lines — wiring the framework around it buys nothing. The one place it might have
+  earned its place — a spatio-temporal latent field — was then investigated and
+  ruled out (see below / Outcome), so stochadex stays out.
+- ❌ **C. Exposure (DfT AADF)** — investigated, dropped. London AADF covers only
+  27% of cells (major roads); the signal is moderate and confounded (corr ~0.37 but
+  non-monotonic — motorways are high-flow, low-collision); and `base_i` already
+  measures each cell's rate directly, so exposure adds ~nothing for prediction. Its
+  only distinct value (a per-vehicle-km "safety vs busyness" rate) is blocked by the
+  coverage gap.
+- ❌ **D. Road-network features** — not pursued: same logic as C (static proxies
+  lose to 5 years of direct per-cell history).
+- ❌ **Spatio-temporal latent field** (the would-be stochadex build) — investigated,
+  dropped. The local space-time residual has pooled AR(1) ≈ −0.006 and spatial
+  coherence ≈ 0.017: no forecastable local structure, so the field collapses to the
+  current model. Building it would be an identity transform.
+- ❌ **Forward-causal interventions (LTNs/20mph)** — the one positive lead, then
+  ruled out. A naive DiD on the Active Travel Academy LTN dataset showed −11%, but an
+  event-study revealed the treated cells were *already* declining pre-install (no
+  causal step): siting **selection**, not effect. Not a clean covariate.
 
-**Ruled out by evidence:** trend/recency weighting (a trailing-window probe was
-null — `f_t` already carries the London level/trend), and weather at monthly
-resolution (absorbed by `f_t`).
+**Also ruled out:** trend/recency weighting (trailing-window probe null — `f_t`
+carries the London trend), and weather at monthly resolution (absorbed by `f_t`).
 
 ---
 
-## Open decisions to settle as we build
+## Outcome
 
-- **0.5km + spatial smoothing** — adopt once enhancement A lands and the
-  finer-grid calibration holds.
-- **Public presentation unit** — 1km cells are honest for modelling but arbitrary
-  for the public; aggregate to nameable units (boroughs, major roads) for display
-  while keeping cells under the hood.
-- **Exposure normalisation** — when to add AADF for the "safety vs busyness" rate.
-- **Live nowcast proxy (v3)** — whether a future same-week proxy (e.g. a real-time
-  incident feed) is worth standing up to shorten the annual settle cadence.
+The model is at the **information ceiling of the collision data**. With 5 years of
+per-cell history, London collision risk is well described by a stable spatial
+surface + month-of-year seasonality + a single global AR(1) factor + Poisson noise
+— and that is exactly the A+B model in [`internal/safety`](internal/safety). Every
+covariate and every richer structure we tested (exposure, road features, a
+spatio-temporal field, interventions) either lost to the history or dissolved under
+scrutiny. The recurring finding — **structure is global, not local** — held from
+four independent directions.
+
+Two deliberate conclusions:
+
+- **No stochadex.** It was removed with the works pipeline and never reintroduced,
+  because nothing justified a multi-model graph: the one place it would fit (the
+  spatio-temporal field) collapses to a closed-form scalar AR(1). Wrapping that in
+  the framework would be scaffolding for its own sake.
+- **No dashboard.** Descoped — this is an honest modelling side-project, not a
+  product. The validated model, the backtest, and the committed forward prediction
+  (`data/predictions/`, awaiting the 2025 STATS19 release) are the artifact.
+
+What would change the verdict, if ever revisited: genuinely *exogenous*
+forward-causal data (a clean intervention schedule that survives an event-study;
+finer-grained exposure than AADF) or a finer temporal resolution where weather and
+short-term dynamics start to matter. None was available here at a quality that beat
+five years of history.

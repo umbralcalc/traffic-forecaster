@@ -1,6 +1,12 @@
 # Build artifacts
 /bin/
 *.test
+# Stray `go build ./cmd/X` binaries land at the repo root named after the command
+/build-accident-burden
+/safety-backtest
+/grid-sweep
+/forecast
+/resolve
 
 # Local environment
 .env
@@ -9,7 +15,8 @@
 # cmd/build-accident-burden, cited in SOURCES.md, never committed.
 /data/incidents/
 
-# Legacy local data from the removed works pipeline — never commit. Safe to delete
-# from disk to reclaim space (data/streetmanager is ~540MB).
+# Dead local data: the removed TfL snapshot collection (data/raw) and works
+# pipeline (data/burden, data/streetmanager ~540MB). Never commit; safe to delete.
+/data/raw/
 /data/burden/
 /data/streetmanager/

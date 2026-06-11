@@ -18,12 +18,22 @@ predictions and resolutions (the proof-of-commit record).
 - Attribution: *Contains public sector information licensed under the Open
   Government Licence v3.0 (DfT STATS19).*
 
-## DfT road traffic counts (AADF) — held for an exposure-adjusted rating
+## DfT road traffic counts (AADF) — investigated, not used
 
-- Annual modelled link-level traffic counts. Not used in the v1 absolute rating;
-  parked per PLAN.md for the future exposure-adjusted ("safety vs busyness") rate,
-  i.e. collision risk per vehicle-km.
+- Annual modelled link-level traffic counts (region files at
+  `storage.googleapis.com/dft-statistics/road-traffic/downloads/aadf/region_id/`).
+- Evaluated as an exposure covariate and dropped (see PLAN.md): only ~27% of London
+  cells have a count point, the signal is confounded (high-flow motorways have *low*
+  collision density), and 5 years of per-cell history already captures the rate. Not
+  part of the model.
 - Licence: Open Government Licence v3.0 (Crown copyright).
+
+## Active Travel Academy — London LTN dataset (investigated, not used)
+
+- LTN locations + implementation dates (GeoJSON): used to test whether road-safety
+  interventions are a forward-causal covariate. An event-study showed the apparent
+  effect was siting selection, not causation (see PLAN.md), so it is not in the model.
+- Source: https://blog.westminster.ac.uk/ata/projects/london-ltn-dataset/
 
 ---
 

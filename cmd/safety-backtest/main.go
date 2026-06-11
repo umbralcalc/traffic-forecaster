@@ -24,11 +24,10 @@ func main() {
 	histK := flag.Int("hist-k", 0, "trailing window for level/anomaly (0 = all history)")
 	spatialR := flag.Int("spatial-r", 0, "neighbourhood radius (cells) for the spatial prior (0 = global pool)")
 	shrink := flag.Float64("shrink", 1.0, "pseudo-exposure shrinking each cell toward its prior")
-	decay := flag.Float64("decay", 0, "Gaussian distance-decay bandwidth (cells) for the prior (0 = uniform box)")
 	ar := flag.Bool("ar", false, "model the shared factor f_t as AR(1) (momentum) instead of iid")
 	n := flag.Int("n", 400, "ensemble size")
 	flag.Parse()
-	m := safety.PoissonFactorModel{N: *n, Seed: 1, HistK: *histK, SpatialR: *spatialR, ShrinkA: *shrink, SpatialDecay: *decay, AR: *ar}
+	m := safety.PoissonFactorModel{N: *n, Seed: 1, HistK: *histK, SpatialR: *spatialR, ShrinkA: *shrink, AR: *ar}
 	if err := run(*in, *col, *minHistory, m); err != nil {
 		fmt.Fprintln(os.Stderr, "safety-backtest:", err)
 		os.Exit(1)
