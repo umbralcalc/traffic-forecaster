@@ -29,6 +29,7 @@ type cellPred struct {
 }
 
 type tierPred struct {
+	Model         string     `json:"model"`
 	ExpectedTotal float64    `json:"expected_total"`
 	TotalP5       float64    `json:"total_p5"`
 	TotalP50      float64    `json:"total_p50"`
@@ -125,15 +126,18 @@ func run(in, trainThrough, from, to string, cellKm float64, n int, seed uint64, 
 		pred := prediction{
 			TargetMonth:  monthStr(idx),
 			MadeAt:       time.Now().UTC().Format(time.RFC3339),
-			Model:        safety.PoissonFactorModel{}.Name(),
+			Model:        "poisson-factor",
 			CellKm:       cellKm,
 			N:            n,
 			Seed:         seed,
 			TrainThrough: trainThrough,
 			TrainSource:  filepath.Base(in),
 			SettleNote:   "settle against the first STATS19 release containing " + monthStr(idx),
-			Accidents:    tierFor(histAll, ty, tm, n, seed),
-			KSI:          tierFor(histKSI, ty, tm, n, seed),
+			// Per-tier models: the dense all-severity tier needs no spatial smoothing;
+			// the sparse KSI tier borrows strength from its neighbourhood (settled by
+			// the cmd/safety-backtest sweep: R2, a20 best on logloss/deviance/calib).
+			Accidents: tierFor(histAll, ty, tm, accidentsModel(n, seed)),
+			KSI:       tierFor(histKSI, ty, tm, ksiModel(n, seed)),
 		}
 		path := filepath.Join(out, pred.TargetMonth+".json")
 		data, err := json.Marshal(pred) // compact: these are committed proof artifacts
@@ -149,21 +153,34 @@ func run(in, trainThrough, from, to string, cellKm float64, n int, seed uint64, 
 	return nil
 }
 
-func tierFor(hist map[string][]series.Point, ty, tm, n int, seed uint64) tierPred {
-	preds := safety.PoissonFactorModel{N: n, Seed: seed}.PredictAll(hist, ty, tm)
+// accidentsModel forecasts the dense all-severity tier (own data suffices — no
+// spatial smoothing). ksiModel forecasts the sparse KSI tier, borrowing strength
+// from a radius-2 neighbourhood (pseudo-exposure 20).
+func accidentsModel(n int, seed uint64) safety.PoissonFactorModel {
+	return safety.PoissonFactorModel{N: n, Seed: seed}
+}
+func ksiModel(n int, seed uint64) safety.PoissonFactorModel {
+	return safety.PoissonFactorModel{N: n, Seed: seed, SpatialR: 2, ShrinkA: 20}
+}
+
+func tierFor(hist map[string][]series.Point, ty, tm int, model safety.PoissonFactorModel) tierPred {
+	preds := model.PredictAll(hist, ty, tm)
 	cells := make([]string, 0, len(preds))
 	for c := range preds {
 		cells = append(cells, c)
 	}
 	sort.Strings(cells)
 
-	total := make([]float64, n)
+	var total []float64
 	var expTotal float64
-	out := tierPred{Cells: make([]cellPred, 0, len(cells))}
+	out := tierPred{Model: model.Name(), Cells: make([]cellPred, 0, len(cells))}
 	for _, c := range cells {
 		p := preds[c]
 		out.Cells = append(out.Cells, cellPred{Cell: c, Rating: round(p.Rating, 4), Expected: round(p.Expected, 4), P95: p.P95Count})
 		expTotal += p.Expected
+		if total == nil {
+			total = make([]float64, len(p.Ensemble))
+		}
 		for k, v := range p.Ensemble {
 			total[k] += float64(v)
 		}

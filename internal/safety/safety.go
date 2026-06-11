@@ -1,12 +1,14 @@
 // Package safety builds the road-safety rating: a hierarchical Poisson model of
-// monthly collision counts per 2km cell, published as S = P(no collision this
+// monthly collision counts per 1km cell, published as S = P(no collision this
 // month) = exp(-lambda).
 //
 // The intensity is decomposed multiplicatively (log-additively):
 //
 //		lambda_it = base_i * season_moy(t) * exp(f_t)
 //
-//	  - base_i      cell baseline rate (deseasonalised mean, shrunk toward pooled)
+//	  - base_i      cell baseline rate (deseasonalised mean, shrunk toward a prior:
+//	                the global pool, or — with SpatialR>0 — the local neighbourhood
+//	                rate, so sparse cells borrow strength from the risk surface)
 //	  - season_mo   month-of-year multiplier (pooled across cells, mean ~1)
 //	  - f_t         shared London log-anomaly — the common factor that couples every
 //	                cell in a good/bad month (COVID collapse, weather years, trend)
@@ -19,6 +21,7 @@
 package safety
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"sort"
@@ -37,13 +40,27 @@ type Prediction struct {
 // PoissonFactorModel fits the decomposition above by method of moments and
 // samples the predictive ensemble for a target month.
 type PoissonFactorModel struct {
-	N       int     // ensemble size (default 200)
-	Seed    uint64  // base RNG seed
-	HistK   int     // trailing months used for the level/anomaly (0 = all history)
-	ShrinkA float64 // pseudo-count shrinking each cell's base toward the pooled rate
+	N        int     // ensemble size (default 200)
+	Seed     uint64  // base RNG seed
+	HistK    int     // trailing months used for the level/anomaly (0 = all history)
+	ShrinkA  float64 // pseudo-exposure shrinking each cell's base toward its prior
+	SpatialR int     // neighbourhood radius (cells) for the spatial prior; 0 = global pool
 }
 
-func (m PoissonFactorModel) Name() string { return "poisson-factor" }
+func (m PoissonFactorModel) Name() string {
+	if m.SpatialR > 0 {
+		return fmt.Sprintf("poisson-factor+sp(r%d,a%g)", m.SpatialR, m.shrink())
+	}
+	return "poisson-factor"
+}
+
+// shrink is the effective pseudo-exposure (defaults to 1).
+func (m PoissonFactorModel) shrink() float64 {
+	if m.ShrinkA == 0 {
+		return 1.0
+	}
+	return m.ShrinkA
+}
 
 // PredictAll fits on the supplied per-cell histories (counts in Point.Value) and
 // returns the predictive distribution for target month (ty, tm).
@@ -54,10 +71,7 @@ func (m PoissonFactorModel) PredictAll(
 	if n <= 0 {
 		n = 200
 	}
-	shrink := m.ShrinkA
-	if shrink == 0 {
-		shrink = 1.0
-	}
+	shrink := m.shrink()
 
 	// Optional trailing window: keep only the last HistK calendar months present
 	// anywhere in the panel (the panel is dense, so the month set is shared).
@@ -110,18 +124,36 @@ func (m PoissonFactorModel) PredictAll(
 		}
 	}
 
-	// --- stage 2: per-cell base rate (deseasonalised mean, shrunk to pooled) ---
-	base := map[string]float64{}
+	// --- stage 2: per-cell base rate (deseasonalised, shrunk toward a prior) ---
+	// Raw deseasonalised counts and seasonal exposure per cell.
+	cnt := make(map[string]float64, len(histories))
+	seasExp := make(map[string]float64, len(histories))
 	for cell, pts := range histories {
-		var c, seasExp float64
+		var c, se float64
 		for _, p := range pts {
 			if !inWindow(p) {
 				continue
 			}
 			c += p.Value
-			seasExp += season[p.Month]
+			se += season[p.Month]
 		}
-		base[cell] = (c + shrink*overall) / (seasExp + shrink)
+		cnt[cell] = c
+		seasExp[cell] = se
+	}
+	// Prior each cell shrinks toward: with SpatialR>0, the local neighbourhood rate
+	// (borrow strength from the surrounding risk surface — a quiet cell stays safe,
+	// a sparse cell ringed by busy roads is lifted); otherwise the global pool.
+	prior := make(map[string]float64, len(histories))
+	if m.SpatialR > 0 {
+		prior = neighbourPriors(cnt, seasExp, m.SpatialR, overall)
+	} else {
+		for cell := range histories {
+			prior[cell] = overall
+		}
+	}
+	base := make(map[string]float64, len(histories))
+	for cell := range histories {
+		base[cell] = (cnt[cell] + shrink*prior[cell]) / (seasExp[cell] + shrink)
 	}
 
 	// --- stage 3: shared London log-anomaly f_t and its spread sigmaF ---
@@ -175,6 +207,51 @@ func (m PoissonFactorModel) PredictAll(
 			Expected: lamSum / float64(n),
 			P95Count: sorted[int(0.95*float64(n-1))],
 			Ensemble: ens,
+		}
+	}
+	return out
+}
+
+// neighbourPriors returns, for each "i_j" cell, the deseasonalised collision rate
+// over its Chebyshev-radius-r neighbours (excluding itself): summed neighbour
+// counts over summed neighbour seasonal exposure. Pooling counts (not averaging
+// per-cell rates) is the Gamma-Poisson local rate — busier neighbours carry more
+// information. Cells with no observed neighbours fall back to the global rate.
+func neighbourPriors(cnt, seasExp map[string]float64, r int, fallback float64) map[string]float64 {
+	type ij struct{ i, j int }
+	coord := make(map[string]ij, len(cnt))
+	present := make(map[ij]string, len(cnt))
+	for cell := range cnt {
+		var i, j int
+		if _, err := fmt.Sscanf(cell, "%d_%d", &i, &j); err != nil {
+			continue
+		}
+		coord[cell] = ij{i, j}
+		present[ij{i, j}] = cell
+	}
+	out := make(map[string]float64, len(cnt))
+	for cell := range cnt {
+		c, ok := coord[cell]
+		if !ok {
+			out[cell] = fallback // unparseable id: no neighbourhood
+			continue
+		}
+		var sc, se float64
+		for di := -r; di <= r; di++ {
+			for dj := -r; dj <= r; dj++ {
+				if di == 0 && dj == 0 {
+					continue
+				}
+				if nb, ok := present[ij{c.i + di, c.j + dj}]; ok {
+					sc += cnt[nb]
+					se += seasExp[nb]
+				}
+			}
+		}
+		if se > 0 {
+			out[cell] = sc / se
+		} else {
+			out[cell] = fallback
 		}
 	}
 	return out

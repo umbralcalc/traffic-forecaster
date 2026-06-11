@@ -79,7 +79,7 @@ func run(url string, minHistory, n int, timeout time.Duration) error {
 			"unit", "units", "dev.model", "dev.naive", "dev.skill", "ll.skill", "cal.err")
 		for _, c := range cfgs {
 			panel := buildPanel(recs, c.keyOf, tier == "ksi")
-			model, naive, _ := safety.Backtest(panel, minHistory, n, 0)
+			model, naive, _ := safety.Backtest(panel, safety.PoissonFactorModel{N: n, Seed: 1}, minHistory)
 			devSkill := 100 * (naive.Deviance - model.Deviance) / naive.Deviance
 			llSkill := 100 * (naive.LogLoss - model.LogLoss) / naive.LogLoss
 			fmt.Printf("  %-12s %6d %9.3f %9.3f %9.1f%% %9.1f%% %8.3f\n",

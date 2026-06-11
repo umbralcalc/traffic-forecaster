@@ -27,6 +27,7 @@ type prediction struct {
 	KSI          tier   `json:"ksi"`
 }
 type tier struct {
+	Model         string     `json:"model"`
 	ExpectedTotal float64    `json:"expected_total"`
 	TotalP5       float64    `json:"total_p5"`
 	TotalP95      float64    `json:"total_p95"`
@@ -40,6 +41,7 @@ type cellPred struct {
 
 type tierResult struct {
 	Tier            string      `json:"tier"`
+	Model           string      `json:"model"`
 	N               int         `json:"cells_scored"`
 	Brier           float64     `json:"brier"`
 	LogLoss         float64     `json:"logloss"`
@@ -162,7 +164,7 @@ func score(name string, t tier, realised map[string]int) tierResult {
 		curve[i] = []float64{round(mp[i], 3), round(fr[i], 3), ct[i]}
 	}
 	return tierResult{
-		Tier: name, N: nn,
+		Tier: name, Model: t.Model, N: nn,
 		Brier: round(brier, 4), LogLoss: round(logloss, 4), Deviance: round(deviance, 4),
 		CalErr:        round(rel.CalibrationError(), 4),
 		RealisedTotal: realTotal,

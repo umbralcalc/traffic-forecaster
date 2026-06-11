@@ -40,11 +40,11 @@ func (s *Scores) finalise() {
 	s.CalErr = s.Rel.CalibrationError()
 }
 
-// Backtest runs an expanding-window backtest of the PoissonFactorModel over a
-// dense per-cell monthly panel, alongside two reference forecasters that share
+// Backtest runs an expanding-window backtest of the given PoissonFactorModel over
+// a dense per-cell monthly panel, alongside two reference forecasters that share
 // the same train/test split: a per-cell flat base-rate ("naive") and the
 // London-pooled mean rate ("climatology"). It returns the three score sets.
-func Backtest(panel map[string][]series.Point, minHistory, n, histK int) (model, naive, clim *Scores) {
+func Backtest(panel map[string][]series.Point, fitted PoissonFactorModel, minHistory int) (model, naive, clim *Scores) {
 	idxSet := map[int]bool{}
 	for _, pts := range panel {
 		for _, p := range pts {
@@ -88,7 +88,7 @@ func Backtest(panel map[string][]series.Point, minHistory, n, histK int) (model,
 			poolRate = poolSum / poolN
 		}
 
-		preds := PoissonFactorModel{N: n, Seed: 1, HistK: histK}.PredictAll(hist, ty, tm)
+		preds := fitted.PredictAll(hist, ty, tm)
 		for cell, y := range realised {
 			p := preds[cell]
 			model.add(1-p.Rating, p.Expected, y)

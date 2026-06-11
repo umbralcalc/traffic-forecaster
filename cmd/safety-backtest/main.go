@@ -22,23 +22,26 @@ func main() {
 	col := flag.String("col", "accidents", "tier column to forecast (accidents | ksi)")
 	minHistory := flag.Int("min-history", 24, "months of history before scoring a target")
 	histK := flag.Int("hist-k", 0, "trailing window for level/anomaly (0 = all history)")
+	spatialR := flag.Int("spatial-r", 0, "neighbourhood radius (cells) for the spatial prior (0 = global pool)")
+	shrink := flag.Float64("shrink", 1.0, "pseudo-exposure shrinking each cell toward its prior")
 	n := flag.Int("n", 400, "ensemble size")
 	flag.Parse()
-	if err := run(*in, *col, *minHistory, *histK, *n); err != nil {
+	m := safety.PoissonFactorModel{N: *n, Seed: 1, HistK: *histK, SpatialR: *spatialR, ShrinkA: *shrink}
+	if err := run(*in, *col, *minHistory, m); err != nil {
 		fmt.Fprintln(os.Stderr, "safety-backtest:", err)
 		os.Exit(1)
 	}
 }
 
-func run(in, col string, minHistory, histK, n int) error {
+func run(in, col string, minHistory int, m safety.PoissonFactorModel) error {
 	loaded, err := series.Load(in, col, "cell")
 	if err != nil {
 		return err
 	}
-	fmt.Printf("panel: %d cells, tier %q\n", len(loaded.Series), col)
+	fmt.Printf("panel: %d cells, tier %q (spatial-r %d, shrink %.1f)\n", len(loaded.Series), col, m.SpatialR, m.ShrinkA)
 
-	model, naive, clim := safety.Backtest(loaded.Series, minHistory, n, histK)
-	fmt.Printf("\nexpanding-window backtest (min history %d months, hist-k %d):\n", minHistory, histK)
+	model, naive, clim := safety.Backtest(loaded.Series, m, minHistory)
+	fmt.Printf("\nexpanding-window backtest (min history %d months, hist-k %d):\n", minHistory, m.HistK)
 	fmt.Println("  (lower Brier/logloss/deviance better; cal.err closer to 0 = better-calibrated)")
 	for _, s := range []*safety.Scores{model, naive, clim} {
 		fmt.Printf("  %-16s  Brier %.4f   logloss %.4f   Pois.dev %.3f   cal.err %.3f   (n=%d)\n",

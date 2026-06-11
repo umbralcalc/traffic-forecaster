@@ -185,11 +185,16 @@ jointly-coherent ensembles.
 Ordered by value-per-effort. The first two need **no new data** and are the model
 that justifies pushing to 0.5km.
 
-- **A. Spatial smoothing of `base_i` (CAR/ICAR/kernel).** Today a cell borrows
-  strength only from the London-wide pool; risk is a *surface*, so a cell should
-  borrow from its neighbours. (Distinct from the "coupling is global" finding,
-  which was about temporal *shocks* `f_t` — this is the static base-rate field.)
-  Sharpens sparse fine cells and unlocks 0.5km (where skill was higher still).
+- ✅ **A. Spatial smoothing of `base_i` — done.** Each cell now shrinks toward its
+  Chebyshev-radius-R neighbourhood rate (Gamma-Poisson empirical Bayes, pooling
+  neighbour counts), not the global pool (`PoissonFactorModel.SpatialR`/`ShrinkA`,
+  `neighbourPriors`). The result is **tier-specific** (settled by a sweep): the
+  dense all-severity tier is already well-served by its own data — smoothing
+  doesn't help, so it stays at R0. The sparse **KSI** tier benefits clearly at
+  **R2, a20** — logloss 0.2848→0.2777, Poisson deviance 0.448→0.433, calibration
+  0.008→0.004 — and the gain holds out-of-sample (held-out 2024). `cmd/forecast`
+  applies the per-tier models. NEXT under A: distance-decay kernel + revisit
+  0.5km now that sparse cells borrow strength.
 - **B. `f_t` as a latent stochastic process (the stochadex fit).** Replace the iid
   `f_t ~ N(0,σ)` with an AR(1)/OU/random-walk Iteration → a state-space /
   log-Gaussian Cox process. Gives momentum, trend, **multi-horizon forecasts**

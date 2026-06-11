@@ -1,6 +1,7 @@
 package safety
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -111,6 +112,36 @@ func TestRatingExceedsNaiveUnderOverdispersion(t *testing.T) {
 	naive := math.Exp(-out.Expected)
 	if out.Rating < naive-0.02 {
 		t.Errorf("rating %.3f below naive %.3f — overdispersion should raise it", out.Rating, naive)
+	}
+}
+
+func TestSpatialPriorLiftsZeroCellNearBusyNeighbours(t *testing.T) {
+	// A cell with zero collision history, ringed by busy neighbours. Spatial
+	// smoothing must lift its risk (borrow from the neighbourhood) — higher
+	// expected count, lower rating — than the global-pool model, which only sees
+	// the (low) London-wide mean.
+	hist := map[string][]series.Point{}
+	for di := -1; di <= 1; di++ {
+		for dj := -1; dj <= 1; dj++ {
+			rate := 5.0
+			if di == 0 && dj == 0 {
+				rate = 0.0 // the centre cell: never a collision in training
+			}
+			hist[fmt.Sprintf("%d_%d", 10+di, 10+dj)] = monthly(flat(rate))
+		}
+	}
+	// Far-away quiet cells, so the global pool is low (isolating the local effect).
+	for k := 0; k < 20; k++ {
+		hist[fmt.Sprintf("100_%d", k)] = monthly(flat(0.0))
+	}
+
+	global := PoissonFactorModel{N: 4000, Seed: 1}.PredictAll(hist, 2025, 6)["10_10"]
+	spatial := PoissonFactorModel{N: 4000, Seed: 1, SpatialR: 1, ShrinkA: 20}.PredictAll(hist, 2025, 6)["10_10"]
+	if spatial.Expected <= global.Expected {
+		t.Errorf("spatial expected %.3f should exceed global %.3f (borrow from busy neighbours)", spatial.Expected, global.Expected)
+	}
+	if spatial.Rating >= global.Rating {
+		t.Errorf("spatial rating %.3f should be below global %.3f (busy surroundings = riskier)", spatial.Rating, global.Rating)
 	}
 }
 
