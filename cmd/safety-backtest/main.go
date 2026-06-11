@@ -25,9 +25,10 @@ func main() {
 	spatialR := flag.Int("spatial-r", 0, "neighbourhood radius (cells) for the spatial prior (0 = global pool)")
 	shrink := flag.Float64("shrink", 1.0, "pseudo-exposure shrinking each cell toward its prior")
 	decay := flag.Float64("decay", 0, "Gaussian distance-decay bandwidth (cells) for the prior (0 = uniform box)")
+	ar := flag.Bool("ar", false, "model the shared factor f_t as AR(1) (momentum) instead of iid")
 	n := flag.Int("n", 400, "ensemble size")
 	flag.Parse()
-	m := safety.PoissonFactorModel{N: *n, Seed: 1, HistK: *histK, SpatialR: *spatialR, ShrinkA: *shrink, SpatialDecay: *decay}
+	m := safety.PoissonFactorModel{N: *n, Seed: 1, HistK: *histK, SpatialR: *spatialR, ShrinkA: *shrink, SpatialDecay: *decay, AR: *ar}
 	if err := run(*in, *col, *minHistory, m); err != nil {
 		fmt.Fprintln(os.Stderr, "safety-backtest:", err)
 		os.Exit(1)
@@ -48,6 +49,9 @@ func run(in, col string, minHistory int, m safety.PoissonFactorModel) error {
 		fmt.Printf("  %-16s  Brier %.4f   logloss %.4f   Pois.dev %.3f   cal.err %.3f   (n=%d)\n",
 			s.Name, s.Brier, s.LogLoss, s.Deviance, s.CalErr, s.N)
 	}
+
+	fmt.Printf("\nLondon-total forecast (where the shared factor matters): CRPS %.1f   90%%-coverage %.2f\n",
+		model.TotalCRPS, model.TotalCover)
 
 	fmt.Println("\nreliability (forecast P(incident) vs realised frequency):")
 	mp, fr, ct := model.Rel.Curve()

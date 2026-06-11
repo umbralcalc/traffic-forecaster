@@ -205,12 +205,19 @@ that justifies pushing to 0.5km.
   **1km stays the modelling unit**; the effective spatial resolution is set by the
   smoothing bandwidth (~1–2km), which 1km cells already sample. 0.5km remains a
   future high-res-display option.
-- **B. `f_t` as a latent stochastic process (the stochadex fit).** Replace the iid
-  `f_t ~ N(0,σ)` with an AR(1)/OU/random-walk Iteration → a state-space /
-  log-Gaussian Cox process. Gives momentum, trend, **multi-horizon forecasts**
-  (3/6/12 months) with honest fan-out, and jointly-coherent cell ensembles. Ports
-  the width-N vectorised-iteration pattern (from the retired
-  `HierarchicalEmergencyIteration`) to a log-link/Poisson emission.
+- ✅ **B. `f_t` as an AR(1) process — done.** The shared factor is strongly
+  autocorrelated (ACF1 ≈ 0.55 accidents / 0.61 KSI), so the iid model threw away
+  real momentum. `PoissonFactorModel.AR` now fits an AR(1) (`ar1`) and forecasts the
+  target factor at `phi^h·f_last` (h months ahead) with horizon-aware fan-out
+  `sigmaF·sqrt(1-phi^2h)`. Per-cell scores are unchanged (the factor drives the
+  *joint* level, not the marginals) — the win is on the **London total**: CRPS
+  144→118 (accidents) / 28→23 (KSI), ~16–18% better, coverage held; plus honest
+  **multi-horizon** fan-out (near-term tight, relaxing to unconditional). On in
+  production for both tiers (`+ar1`). **stochadex call:** a *scalar* AR(1) is ~15
+  lines — wiring the framework around it buys nothing. stochadex earns its place at
+  the next step: a **spatio-temporal latent field** (fuse A's spatial smoothing with
+  B's dynamics into a Cox process simulated forward) — that's where the width-N
+  vectorised-iteration pattern pays off.
 - **C. Exposure (DfT AADF)** → rate per vehicle-km: the "safety vs busyness"
   distinction. Needs the AADF join; makes the rating about danger, not traffic.
 - **D. Road-network static features (OS/OSM):** junction density, road-class mix —

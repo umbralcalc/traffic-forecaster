@@ -161,6 +161,40 @@ func TestSpatialDecayWeightsNearNeighboursMore(t *testing.T) {
 	}
 }
 
+func TestARCarriesRecentMomentum(t *testing.T) {
+	// A shared "bad spell" in the most recent months (every cell elevated) creates a
+	// positive run in the shared factor. The AR(1) model carries that momentum into
+	// next month's forecast; the iid model reverts to the unconditional mean. So the
+	// AR forecast's expected total must exceed the iid one.
+	hist := map[string][]series.Point{}
+	for c := 0; c < 40; c++ {
+		var pts []series.Point
+		for y := 2023; y <= 2024; y++ {
+			for mo := 1; mo <= 12; mo++ {
+				rate := 2.0
+				if y == 2024 && mo >= 10 { // recent shared spike (Oct–Dec 2024)
+					rate = 6.0
+				}
+				pts = append(pts, series.Point{Year: y, Month: mo, Value: rate})
+			}
+		}
+		hist[fmt.Sprintf("%d_0", c)] = pts
+	}
+	iid := totalExpected(PoissonFactorModel{N: 4000, Seed: 1}.PredictAll(hist, 2025, 1))
+	ar := totalExpected(PoissonFactorModel{N: 4000, Seed: 1, AR: true}.PredictAll(hist, 2025, 1))
+	if ar <= iid {
+		t.Errorf("AR expected total %.1f should exceed iid %.1f (carry recent positive momentum)", ar, iid)
+	}
+}
+
+func totalExpected(preds map[string]Prediction) float64 {
+	var s float64
+	for _, p := range preds {
+		s += p.Expected
+	}
+	return s
+}
+
 func intsToFloat(xs []int) []float64 {
 	out := make([]float64, len(xs))
 	for i, x := range xs {

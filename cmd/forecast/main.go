@@ -155,12 +155,14 @@ func run(in, trainThrough, from, to string, cellKm float64, n int, seed uint64, 
 
 // accidentsModel forecasts the dense all-severity tier (own data suffices — no
 // spatial smoothing). ksiModel forecasts the sparse KSI tier, borrowing strength
-// from a radius-2 neighbourhood (pseudo-exposure 20).
+// from a radius-2 neighbourhood (pseudo-exposure 20). Both model the shared London
+// factor as AR(1) (momentum from the most recent anomaly → ~16-18% better
+// London-total CRPS and honest multi-horizon fan-out).
 func accidentsModel(n int, seed uint64) safety.PoissonFactorModel {
-	return safety.PoissonFactorModel{N: n, Seed: seed}
+	return safety.PoissonFactorModel{N: n, Seed: seed, AR: true}
 }
 func ksiModel(n int, seed uint64) safety.PoissonFactorModel {
-	return safety.PoissonFactorModel{N: n, Seed: seed, SpatialR: 2, ShrinkA: 20}
+	return safety.PoissonFactorModel{N: n, Seed: seed, SpatialR: 2, ShrinkA: 20, AR: true}
 }
 
 func tierFor(hist map[string][]series.Point, ty, tm int, model safety.PoissonFactorModel) tierPred {

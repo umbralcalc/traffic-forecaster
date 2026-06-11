@@ -18,6 +18,12 @@ type Scores struct {
 	Deviance, CalErr float64
 	N                int
 	Rel              *scoring.Reliability
+	// London-total metrics (where the shared factor's quality shows up): mean CRPS
+	// of the predicted total-collision ensemble against the realised total, and the
+	// fraction of months whose realised total fell in the predictive 90% interval.
+	TotalCRPS  float64
+	TotalCover float64
+	totalN     int
 }
 
 func newScores(name string) *Scores { return &Scores{Name: name, Rel: scoring.NewReliability(10)} }
@@ -31,13 +37,52 @@ func (s *Scores) add(pIncident, expected float64, y int) {
 	s.N++
 }
 
+// addTotal scores one month's London-total forecast: the CRPS of the (unsorted)
+// total-count ensemble against the realised total, and whether the total fell in
+// the predictive 90% interval.
+func (s *Scores) addTotal(ens []float64, realised int) {
+	if len(ens) == 0 {
+		return
+	}
+	sorted := append([]float64(nil), ens...)
+	sort.Float64s(sorted)
+	s.TotalCRPS += ensembleCRPS(sorted, float64(realised))
+	lo, hi := sorted[int(0.05*float64(len(sorted)-1))], sorted[int(0.95*float64(len(sorted)-1))]
+	if float64(realised) >= lo && float64(realised) <= hi {
+		s.TotalCover++
+	}
+	s.totalN++
+}
+
 func (s *Scores) finalise() {
 	if s.N > 0 {
 		s.Brier /= float64(s.N)
 		s.LogLoss /= float64(s.N)
 		s.Deviance /= float64(s.N)
 	}
+	if s.totalN > 0 {
+		s.TotalCRPS /= float64(s.totalN)
+		s.TotalCover /= float64(s.totalN)
+	}
 	s.CalErr = s.Rel.CalibrationError()
+}
+
+// ensembleCRPS is the CRPS of a sorted sample ensemble against observation y,
+// via CRPS = E|X-y| - 0.5 E|X-X'| (the standard sample estimator).
+func ensembleCRPS(sorted []float64, y float64) float64 {
+	n := len(sorted)
+	var mad float64
+	for _, x := range sorted {
+		mad += math.Abs(x - y)
+	}
+	mad /= float64(n)
+	// E|X-X'| via the sorted-sample identity: (2/n^2) * sum_i (2i-n+1) x_i.
+	var spread float64
+	for i, x := range sorted {
+		spread += float64(2*i-n+1) * x
+	}
+	spread *= 2.0 / float64(n*n)
+	return mad - 0.5*spread
 }
 
 // Backtest runs an expanding-window backtest of the given PoissonFactorModel over
@@ -89,9 +134,18 @@ func Backtest(panel map[string][]series.Point, fitted PoissonFactorModel, minHis
 		}
 
 		preds := fitted.PredictAll(hist, ty, tm)
+		var totalEns []float64
+		var realisedTotal int
 		for cell, y := range realised {
 			p := preds[cell]
 			model.add(1-p.Rating, p.Expected, y)
+			if totalEns == nil {
+				totalEns = make([]float64, len(p.Ensemble))
+			}
+			for k, v := range p.Ensemble {
+				totalEns[k] += float64(v)
+			}
+			realisedTotal += y
 
 			var cs, cn float64
 			for _, h := range hist[cell] {
@@ -105,6 +159,7 @@ func Backtest(panel map[string][]series.Point, fitted PoissonFactorModel, minHis
 			naive.add(1-math.Exp(-rate), rate, y)
 			clim.add(1-math.Exp(-poolRate), poolRate, y)
 		}
+		model.addTotal(totalEns, realisedTotal)
 	}
 	model.finalise()
 	naive.finalise()

@@ -48,16 +48,26 @@ type PoissonFactorModel struct {
 	// SpatialDecay is the Gaussian bandwidth (in cells) for weighting neighbours by
 	// distance within the radius; 0 = uniform box (every neighbour weighted equally).
 	SpatialDecay float64
+	// AR models the shared London factor f_t as an AR(1) process instead of iid
+	// noise: the target-month draw is centred on phi^h * f_last (momentum from the
+	// most recent anomaly, h months ahead) with horizon-aware fan-out. Off = the
+	// stationary iid factor (f ~ N(0, sigmaF)).
+	AR bool
 }
 
 func (m PoissonFactorModel) Name() string {
+	name := "poisson-factor"
 	if m.SpatialR > 0 {
 		if m.SpatialDecay > 0 {
-			return fmt.Sprintf("poisson-factor+sp(r%d,a%g,d%g)", m.SpatialR, m.shrink(), m.SpatialDecay)
+			name += fmt.Sprintf("+sp(r%d,a%g,d%g)", m.SpatialR, m.shrink(), m.SpatialDecay)
+		} else {
+			name += fmt.Sprintf("+sp(r%d,a%g)", m.SpatialR, m.shrink())
 		}
-		return fmt.Sprintf("poisson-factor+sp(r%d,a%g)", m.SpatialR, m.shrink())
 	}
-	return "poisson-factor"
+	if m.AR {
+		name += "+ar1"
+	}
+	return name
 }
 
 // shrink is the effective pseudo-exposure (defaults to 1).
@@ -176,13 +186,34 @@ func (m PoissonFactorModel) PredictAll(
 			exp[k] += base[cell] * season[p.Month]
 		}
 	}
-	var fs []float64
-	for k, o := range obs {
+	// Ordered (contiguous) f_t series for the spread and the AR(1) dynamics.
+	var monthsK []int
+	for k := range obs {
+		monthsK = append(monthsK, k)
+	}
+	sort.Ints(monthsK)
+	var fseries []float64
+	for _, k := range monthsK {
 		if e := exp[k]; e > 0 {
-			fs = append(fs, math.Log((o+0.5)/(e+0.5)))
+			fseries = append(fseries, math.Log((obs[k]+0.5)/(e+0.5)))
 		}
 	}
-	sigmaF := math.Sqrt(pvariance(fs))
+	sigmaF := math.Sqrt(pvariance(fseries))
+
+	// AR(1): centre the target-month factor on phi^h * (f_last - mean), h months
+	// ahead, with fan-out var = sigmaF^2 * (1 - phi^2h) (tight near-term, relaxing
+	// to the stationary sigmaF as h grows).
+	fMean, fSD := 0.0, sigmaF
+	if m.AR && len(fseries) >= 3 {
+		phi, mu := ar1(fseries)
+		h := (ty*12 + tm - 1) - monthsK[len(monthsK)-1]
+		if h < 1 {
+			h = 1
+		}
+		fLast := fseries[len(fseries)-1] - mu
+		fMean = mu + math.Pow(phi, float64(h))*fLast
+		fSD = sigmaF * math.Sqrt(1-math.Pow(phi, float64(2*h)))
+	}
 
 	// --- stage 4: predictive ensemble for the target month ---
 	g := season[tm]
@@ -192,7 +223,7 @@ func (m PoissonFactorModel) PredictAll(
 	// what couples the cells jointly).
 	f := make([]float64, n)
 	for k := range f {
-		f[k] = rng.NormFloat64() * sigmaF
+		f[k] = fMean + rng.NormFloat64()*fSD
 	}
 
 	out := make(map[string]Prediction, len(histories))
@@ -295,6 +326,33 @@ func poissonSample(rng *rand.Rand, lambda float64) int {
 			return k - 1
 		}
 	}
+}
+
+// ar1 fits f_t - mu = phi*(f_{t-1} - mu) + e by least squares through the demeaned
+// series, returning phi (clamped to [0, 0.95] — positive persistence, stationary)
+// and the series mean mu.
+func ar1(f []float64) (phi, mu float64) {
+	n := len(f)
+	for _, x := range f {
+		mu += x
+	}
+	mu /= float64(n)
+	var num, den float64
+	for t := 1; t < n; t++ {
+		num += (f[t] - mu) * (f[t-1] - mu)
+		den += (f[t-1] - mu) * (f[t-1] - mu)
+	}
+	if den == 0 {
+		return 0, mu
+	}
+	phi = num / den
+	if phi < 0 {
+		phi = 0
+	}
+	if phi > 0.95 {
+		phi = 0.95
+	}
+	return phi, mu
 }
 
 // pvariance is the population variance (0 for fewer than two points).
